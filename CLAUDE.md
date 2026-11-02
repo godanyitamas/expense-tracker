@@ -8,6 +8,7 @@ Full project context (architecture, sheet layout, spending rules, gotchas): **re
 - `.clasp.json` – points clasp at the bound script (`rootDir: src`).
 - `scripts/clasp-auth.sh` – writes `~/.clasprc.json` from the `CLASPRC_B64` (base64) or `CLASPRC_JSON` env var.
 - `docs/CONTEXT.md` – project context.
+- `tools/preview/` – local dashboard preview: mock data, layout-stability checks, screenshots (see its README).
 
 ## Session start
 1. Run `scripts/clasp-auth.sh`. If neither variable is set, tell the user and continue with offline work only.
@@ -20,6 +21,7 @@ Full project context (architecture, sheet layout, spending rules, gotchas): **re
 - The web app (`/exec`) serves a versioned deployment. After changing `Dashboard.html` or `doGet`, update **the existing deployment**:
   `clasp deploy -i <deploymentId> -d "<description>"` (find the ID with `clasp deployments`; it's the one that is not `@HEAD`).
   **Never run `clasp deploy` without `-i`**: a new deployment gets a new `/exec` URL, which breaks the Enable Banking redirect and the home-screen shortcut.
+- Before pushing a `Dashboard.html` change, preview it locally: `node tools/preview/build.js /tmp/preview.html`, then `node tools/preview/check.js /tmp/preview.html` (must pass) and `node tools/preview/shot.js /tmp/preview.html /tmp/shot.png 390:m0 390:dark:m0` to show the user screenshots. If `getDashboardData_` gets a new field, add it to the mock data in `build.js`.
 - **Never run `setup`** and don't run `recategorizeAll` without asking (see `docs/CONTEXT.md`).
 - Secrets live in Script Properties (`EB_APP_ID`, `EB_PRIVATE_KEY`, …). Never hard-code them or commit them.
 - The sheet itself (formulas, Rules tab) is edited through the Google Sheets connector, not clasp.
