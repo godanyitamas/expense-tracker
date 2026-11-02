@@ -377,11 +377,19 @@ function getDashboardData_() {
     .filter(r => r[0] !== '' && r[1] !== '')
     .map(r => ({ date: ymd(r[1]), merchant: String(r[2]), category: String(r[3]), amount: num(r[4]) }));
 
+  // Salary tab: A month (budget month), B salary in EUR, C source. Empty months are skipped.
+  const salSh = ss.getSheetByName('Salary');
+  const salary = salSh && salSh.getLastRow() > 1
+    ? salSh.getRange(2, 1, salSh.getLastRow() - 1, 3).getValues()
+      .filter(r => r[0] !== '' && num(r[1]) > 0)
+      .map(r => ({ month: ym(r[0]), amount: num(r[1]), estimate: /estimate/i.test(String(r[2])) }))
+    : [];
+
   const session = getSession_();
   let renewUrl = '';
   try { renewUrl = connectUrl_(); } catch (e) { /* REDIRECT_URL not set */ }
   return {
-    months, cats, tx,
+    months, cats, tx, salary,
     syncedAt: props().getProperty('LAST_SYNC') || '',
     validUntil: (session && session.valid_until) || '',
     renewUrl,

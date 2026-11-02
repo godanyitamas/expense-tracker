@@ -79,12 +79,13 @@
     <div class="kpi"><div class="label" id="k1-label">Spent</div><div class="value" id="k1"></div><div class="note" id="k1-note"></div></div>
     <div class="kpi"><div class="label">Usual month</div><div class="value" id="k2"></div><div class="note">Average of the 6 months before</div></div>
     <div class="kpi"><div class="label">Biggest category</div><div class="value text" id="k3"></div><div class="note" id="k3-note"></div></div>
+    <div class="kpi"><div class="label" id="k4-label">Left from salary</div><div class="value" id="k4"></div><div class="note" id="k4-note"></div></div>
   </section>
  
   <div class="grid2">
     <section class="card" id="bars-card">
       <h2>Total spend per month</h2>
-      <p class="sub">Tap a bar to open that month. Dashed line: your 6-month average.</p>
+      <p class="sub">Tap a bar to open that month. Dashed line: your 6-month average. Green lines: your salary.</p>
       <div id="bars"></div>
     </section>
     <section class="card" id="cats-card">
@@ -136,6 +137,7 @@
   const monthKeys = months.map((m) => m.month);
   const total = new Map(months.map((m) => [m.month, m.total]));
   const catAmt = new Map(D.cats.map((r) => [r.month + '|' + r.category, r.amount]));
+  const salary = new Map((D.salary || []).map((r) => [r.month, r]));
   const avgBefore = (m, get) => {
     const i = monthKeys.indexOf(m);
     const prev = monthKeys.slice(Math.max(0, i - 6), Math.max(0, i)).filter((k) => total.get(k) > 0);
@@ -168,7 +170,7 @@
     const W = Math.max(280, box.clientWidth || 360), H = 210, t = 26, b = 24;
     const svg = svgIn(box, W, H);
     const n = rows.length, step = W / n, bw = step * 0.66;
-    const max = Math.max(1, ...rows.map((r) => r.value), o.avg || 0) * 1.15;
+    const max = Math.max(1, ...rows.map((r) => Math.max(r.value, r.mark || 0)), o.avg || 0) * 1.15;
     const y = (v) => H - b - (v / max) * (H - t - b);
     S('line', { x1: 0, x2: W, y1: y(0), y2: y(0), stroke: css('--line') }, svg);
     const selIdx = rows.findIndex((r) => r.month === o.sel);
@@ -182,11 +184,18 @@
       const hit = S('rect', { x: i * step, y: t, width: step, height: H - t - b, fill: 'transparent', style: 'cursor:pointer' }, svg);
       hit.addEventListener('click', () => o.onPick(r.month));
     });
+    rows.forEach((r, i) => {
+      if (!r.mark) return;
+      const ym = y(r.mark), x = i * step + (step - bw) / 2 - Math.min(4, step * 0.1);
+      S('line', { x1: x, x2: x + bw + 2 * Math.min(4, step * 0.1), y1: ym, y2: ym, stroke: css('--good'), 'stroke-width': 3,
+        'stroke-linecap': 'round', 'pointer-events': 'none' }, svg);
+    });
     if (o.avg) {
       const ya = y(o.avg);
       S('line', { x1: 0, x2: W, y1: ya, y2: ya, stroke: css('--muted'), 'stroke-dasharray': '4 3', 'pointer-events': 'none' }, svg);
       const right = selIdx < n / 2;
-      const lab = S('text', { x: right ? W : 0, y: ya - 5, 'text-anchor': right ? 'end' : 'start', class: 'tick' }, svg);
+      const lab = S('text', { x: right ? W : 0, y: ya - 5, 'text-anchor': right ? 'end' : 'start', class: 'tick',
+        stroke: css('--panel'), 'stroke-width': 4, 'paint-order': 'stroke', 'stroke-linejoin': 'round' }, svg);
       lab.textContent = 'avg ' + eur0.format(o.avg);
     }
     if (selIdx >= 0) {
@@ -206,6 +215,11 @@
     const add = (txt, bold) => { const n = document.createElement(bold ? 'b' : 'span'); n.textContent = txt; take.appendChild(n); };
     add(mLong(m) + sofar + ': '); add(eur0.format(tot), true); add(' spent');
     if (avg) { add(', '); add(signed(tot / avg - 1), true); add(' vs your 6-month average.'); } else add('.');
+    const sal = salary.get(m), left = sal ? sal.amount - tot : null;
+    if (sal) {
+      if (left >= 0) { add(' '); add(eur0.format(left), true); add(' of your salary left' + (sofar ? '.' : ' (' + pct(left / sal.amount) + ' saved).')); }
+      else { add(' '); add(eur0.format(-left), true); add(' more than your salary.'); }
+    }
  
     $('k1-label').textContent = 'Spent in ' + mLong(m) + sofar;
     $('k1').textContent = eur0.format(tot);
@@ -218,6 +232,15 @@
     const top = catsFor(m)[0];
     $('k3').textContent = top ? top.category : '—';
     $('k3-note').textContent = top ? eur0.format(top.amount) + (top.share != null ? ' · ' + pct(top.share) + ' of the month' : '') : '';
+    $('k4-label').textContent = 'Left from salary' + sofar;
+    $('k4').textContent = sal ? (left < 0 ? '−' : '') + eur0.format(Math.abs(left)) : '—';
+    $('k4').className = 'value' + (sal && left < 0 ? ' up' : '');
+    const n4 = $('k4-note'); n4.replaceChildren();
+    if (sal) {
+      n4.append(left >= 0 ? pct(left / sal.amount) + ' saved of ' + eur0.format(sal.amount)
+        : 'over your ' + eur0.format(sal.amount) + ' salary');
+      if (sal.estimate) n4.append(' (estimated)');
+    } else n4.textContent = 'No salary recorded for this month';
     $('cats-title').textContent = 'By category · ' + mLong(m);
   }
  
@@ -241,7 +264,7 @@
   }
  
   function renderBars() {
-    barChart($('bars'), months.map((r) => ({ month: r.month, value: r.total })), {
+    barChart($('bars'), months.map((r) => ({ month: r.month, value: r.total, mark: salary.has(r.month) ? salary.get(r.month).amount : 0 })), {
       sel: state.month, color: css('--accent'), avg: avgBefore(state.month, (k) => total.get(k)),
       onPick: (m) => { state.month = m; render($('bars-card')); },
     });
@@ -347,7 +370,7 @@
     const key = document.documentElement.clientWidth + '|' + state.cat;
     if (key === lockedFor) return;
     lockedFor = key;
-    const els = ['take', 'k1-label', 'k1-note', 'k3', 'k3-note', 'cats'].map($);
+    const els = ['take', 'k1-label', 'k1-note', 'k3', 'k3-note', 'k4-label', 'k4-note', 'cats'].map($);
     if (state.cat) els.push($('tx-box'));
     els.forEach((e) => { e.style.minHeight = ''; });
     const max = els.map(() => 0), keep = state.month;

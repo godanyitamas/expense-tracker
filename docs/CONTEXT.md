@@ -1,6 +1,6 @@
 # Revolut expense tracker — project context
 
-Last updated: 1 Nov 2026. Update this file whenever something structural changes.
+Last updated: 2 Nov 2026. Update this file whenever something structural changes.
 
 ## Goal and principles
 Automatic, phone-first tracker of Revolut spending. Free, simple, "design once and leave it". The Google Sheet is the single source of truth; dashboards only display it. Later: add an IBKR investments view (official IBKR connector exists in Claude).
@@ -23,8 +23,9 @@ Script properties: `EB_APP_ID`, `EB_PRIVATE_KEY`, `REDIRECT_URL` (the `/exec` UR
 
 ## Sheet tabs
 - **Transactions:** A Key (hidden, `accountUid:txId`), B Date, C Amount (signed, negative = out), D Currency, E Merchant, F Description, G Category, H Account, I Loaded at. Sorted newest first.
-- **Rules:** "Merchant contains" → Category. First match wins, so order matters (specific rules above general ones). Matching is case-, accent- and punctuation-insensitive and must start at a word boundary. Credits with no rule become "Income"; debits with no rule become "Uncategorized".
+- **Rules:** "avanade" → Salary is the first rule. "Merchant contains" → Category. First match wins, so order matters (specific rules above general ones). Matching is case-, accent- and punctuation-insensitive and must start at a word boundary. Credits with no rule become "Income"; debits with no rule become "Uncategorized".
 - **ChartData** (hidden, all formulas): A1:C13 last 12 months totals; E:L top-7 categories × month; N:O last full month by category; Q:T category breakdown (this month / last month / 6-month avg); V1:X200 month × category long table; AA1:AE600 spending transactions for the last 12 months (id, date, merchant, category, amount). Both dashboards depend on V:X and AA:AE, and the HTML dashboard also uses A:C.
+- **Salary:** A month (budget month), B salary in EUR, C source; E1:F2 hold a fixed HUF→EUR rate (0.002735017, Google Finance on 2 Nov 2026) and 560,000 HUF. Jan–Mar 2026 = estimate (560,000 HUF × fixed rate). From Apr 2026 B is a formula summing Transactions rows with category "Salary": paid on day 1–15 counts for that month, after the 15th for the next month. Rows run to Dec 2027; extend them after that. The HTML dashboard reads this tab (`getDashboardData_` → `salary`).
 - **Overview:** styled sheet dashboard and charts built on ChartData.
 - **Details:** the old dashboard (renamed). Budgets formulas reference `Details!$B$1`.
 - **Budgets:** categories listed, no budgets set (not wanted for now).
@@ -32,6 +33,7 @@ Script properties: `EB_APP_ID`, `EB_PRIVATE_KEY`, `REDIRECT_URL` (the `/exec` UR
 ## Spending rules (applied in every ChartData formula)
 - EUR only (no HUF pocket synced).
 - Category "Transfers" is excluded: own top-ups (Google Pay top-up), pocket moves ("To EUR…", "Exchanged to EUR"), money from/to Katia (girlfriend) directly.
+- **Salary** (category "Salary", credits, so never counted as spending): Accenture Hungary until Oct 2026, paid by the 10th to OTP and moved to Revolut as "Google Pay Top-Up by *4749" (one per month, 6th–10th, Apr–Oct 2026 tagged by hand; extra top-ups in the same month stay Transfers). Avanade France from 28 Oct 2026, paid at the end of the month for the next month's budget, tagged by the "avanade" rule. The HUF Revolut account is not synced, so Jan–Mar 2026 salary is an estimate.
 - Payments made **from the joint account** (account label contains "KATIA OUTAYEB") are excluded. The monthly €800 personal → joint transfer counts as **Shared household** and covers rent, utilities, cat food and other mutual costs.
 - Uber Eats and Deliveroo → "Delivery (food & groceries)" (used for both restaurants and groceries).
 - Switzerland (Aug 2026) and Andalusia (Mar–Apr 2026) trip merchants → Travel.
@@ -43,7 +45,7 @@ Script properties: `EB_APP_ID`, `EB_PRIVATE_KEY`, `REDIRECT_URL` (the `/exec` UR
 
 ## Gotchas
 - **Never re-run `setup`:** it rebuilds Details/Budgets from the old template and would undo the hand-edited formulas. (Exception: re-creating a missing trigger, and then fix formulas after.)
-- `recategorizeAll` overwrites every category, including manual fixes.
+- `recategorizeAll` overwrites every category, including manual fixes. That includes the 7 hand-tagged salary top-ups (Apr–Oct 2026), which would go back to Transfers.
 - Claude's Google Sheets connector can edit the sheet but **not** Apps Script. Code changes need the user to paste them into the editor.
 - After changing `Dashboard.html` or `doGet`: Deploy → Manage deployments → edit (pencil) → New version. Never create a new deployment, since the `/exec` URL must stay the same (it is the Enable Banking redirect).
 - Rules added through the connector don't trigger `onEdit`; they apply to Uncategorized rows on the next daily sync, or immediately via `recategorizeAll`.
@@ -54,4 +56,6 @@ Script properties: `EB_APP_ID`, `EB_PRIVATE_KEY`, `REDIRECT_URL` (the `/exec` UR
 ## Status
 Done: bank connection, daily sync, rules and categories, Overview tab, Claude dashboard, home-screen web-app dashboard (pending user's deploy and confirmation that it works).
 
-Ideas and open items: confirm the trigger runs and the dashboard footer shows "Synced…"; savings view (income minus spending); IBKR investments view; optionally delete the Claude dashboard artifact.
+Done 2 Nov 2026: Salary tab; dashboard shows "Left from salary" (salary − spending, % saved), salary in the summary line and green salary marks on the monthly chart; layout fixed across months; taps no longer scroll the page.
+
+Ideas and open items: confirm the trigger runs and the dashboard footer shows "Synced…"; IBKR investments view; optionally delete the Claude dashboard artifact.
