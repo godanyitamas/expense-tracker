@@ -18,6 +18,8 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  /* Scroll position is kept by render() itself, the same way in every browser. */
+  html, body { overflow-anchor: none; }
   body { font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
   .wrap { max-width: 1040px; margin: 0 auto; padding: 18px 14px 40px; display: grid; gap: 14px; }
   h1 { font: 400 30px/1.15 ui-serif, Georgia, "Times New Roman", serif; margin: 0; letter-spacing: -0.01em; }
@@ -80,12 +82,12 @@
   </section>
  
   <div class="grid2">
-    <section class="card">
+    <section class="card" id="bars-card">
       <h2>Total spend per month</h2>
       <p class="sub">Tap a bar to open that month. Dashed line: your 6-month average.</p>
       <div id="bars"></div>
     </section>
-    <section class="card">
+    <section class="card" id="cats-card">
       <h2 id="cats-title">By category</h2>
       <p class="sub">Tap a category for its trend and transactions. The dark tick marks its usual month.</p>
       <div id="cats"></div>
@@ -101,7 +103,7 @@
     <div class="empty hidden" id="tx-empty">No spending in this category that month.</div>
   </section>
  
-  <section class="card">
+  <section class="card" id="heat-card">
     <h2>Every category, month by month</h2>
     <p class="sub">Last 6 months, darker means more spent. Tap a row to open that category.</p>
     <div id="heat"></div>
@@ -143,7 +145,8 @@
     .map((r) => ({ ...r, share: total.get(m) ? r.amount / total.get(m) : null, avg: avgBefore(m, (k) => catAmt.get(k + '|' + r.category) || 0) }))
     .sort((a, b) => b.amount - a.amount);
  
-  const state = { month: monthKeys.length ? monthKeys[monthKeys.length - 1] : null, cat: null };
+  // from: which section opened the detail card ('cats' or 'heat'); the card is shown right below it.
+  const state = { month: monthKeys.length ? monthKeys[monthKeys.length - 1] : null, cat: null, from: 'cats' };
  
   // ---- tiny SVG helper ----
   const NS = 'http://www.w3.org/2000/svg';
@@ -223,16 +226,22 @@
       const b = document.createElement('button');
       b.className = 'chip' + (r.month === state.month ? ' on' : '');
       b.textContent = mShort(r.month) + (r.month.slice(0, 4) !== year ? ' ’' + r.month.slice(2, 4) : '');
-      b.addEventListener('click', () => { state.month = r.month; render(); });
+      b.addEventListener('click', () => { state.month = r.month; render(box); });
       box.appendChild(b);
     });
-    const on = box.querySelector('.on'); if (on) on.scrollIntoView({ block: 'nearest', inline: 'center' });
+    // Centre the selected chip by scrolling the chip strip only. scrollIntoView would also
+    // scroll the page vertically back up to the chips on every re-render.
+    const on = box.querySelector('.on');
+    if (on) {
+      const br = box.getBoundingClientRect(), or = on.getBoundingClientRect();
+      box.scrollLeft += (or.left + or.width / 2) - (br.left + br.width / 2);
+    }
   }
  
   function renderBars() {
     barChart($('bars'), months.map((r) => ({ month: r.month, value: r.total })), {
       sel: state.month, color: css('--accent'), avg: avgBefore(state.month, (k) => total.get(k)),
-      onPick: (m) => { state.month = m; render(); },
+      onPick: (m) => { state.month = m; render($('bars-card')); },
     });
   }
  
@@ -250,19 +259,21 @@
       S('rect', { y: 27, height: 8, width: W, rx: 4, fill: css('--grid') }, g);
       S('rect', { y: 27, height: 8, width: Math.max(3, (r.amount / max) * W), rx: 4, fill: catColor(r.category) }, g);
       if (r.avg > 0) { const ax = Math.max(1, (r.avg / max) * W); S('line', { x1: ax, x2: ax, y1: 22, y2: 40, stroke: css('--fg'), 'stroke-width': 2, 'stroke-linecap': 'round' }, g); }
-      g.addEventListener('click', () => { state.cat = state.cat === r.category ? null : r.category; render(true); });
+      g.addEventListener('click', () => openCat(r.category, 'cats'));
     });
   }
  
-  function renderDetail(scroll) {
+  function renderDetail() {
     const box = $('detail');
     if (!state.cat) { box.classList.add('hidden'); return; }
+    const after = state.from === 'heat' ? $('heat-card') : document.querySelector('.grid2');
+    if (after.nextElementSibling !== box) after.after(box);
     box.classList.remove('hidden');
     const c = state.cat, m = state.month;
     $('detail-title').textContent = c;
     barChart($('trend'), monthKeys.map((k) => ({ month: k, value: catAmt.get(k + '|' + c) || 0 })), {
       sel: m, color: catColor(c), avg: avgBefore(m, (k) => catAmt.get(k + '|' + c) || 0),
-      onPick: (k) => { state.month = k; render(); },
+      onPick: (k) => { state.month = k; render(box); },
     });
     $('tx-title').textContent = 'Transactions in ' + mLong(m) + ' ' + m.slice(0, 4);
     const rows = D.tx.filter((t) => t.category === c && t.date.startsWith(m));
@@ -273,7 +284,6 @@
       body.appendChild(tr);
     });
     $('tx-empty').classList.toggle('hidden', rows.length > 0);
-    if (scroll) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
  
   function renderHeat() {
@@ -304,7 +314,7 @@
         const tx = S('text', { x: x + (cw - 4) / 2, y: rowH / 2 + 4, 'text-anchor': 'middle', class: 'hnum', fill: op > 0.55 ? '#fff' : css('--fg') }, g);
         tx.textContent = v > 0 ? short(v) : '';
       });
-      g.addEventListener('click', () => { state.cat = state.cat === c ? null : c; render(true); });
+      g.addEventListener('click', () => openCat(c, 'heat'));
     });
     const j = ms.indexOf(state.month);
     if (j >= 0) S('rect', { x: labelW + j * cw + 0.5, y: headH - 2, width: cw - 1, height: cats.length * rowH + 2, rx: 7, fill: 'none', stroke: css('--fg'), 'stroke-width': 1.5 }, svg);
@@ -325,12 +335,38 @@
     }
   }
  
-  function render(scrollToDetail) {
+  // anchor: the element the user just tapped in. Whatever re-rendering does to the content
+  // above it, the anchor stays at the same spot on screen, so the page never jumps.
+  function render(anchor) {
     if (!state.month) { $('take').textContent = 'No data yet.'; return; }
-    renderTop(); renderChips(); renderBars(); renderCats(); renderDetail(scrollToDetail); renderHeat();
+    const before = anchor ? anchor.getBoundingClientRect().top : null;
+    // If the page got shorter (e.g. the detail card closed at the bottom), the browser would pull
+    // the scroll position up and the content would jump. Hold the old height until the user
+    // scrolls back above the spare space (see the scroll listener below).
+    if (anchor) document.body.style.minHeight = document.body.scrollHeight + 'px';
+    renderTop(); renderChips(); renderBars(); renderCats(); renderDetail(); renderHeat();
+    if (anchor) window.scrollBy(0, anchor.getBoundingClientRect().top - before);
   }
  
-  $('close').addEventListener('click', () => { state.cat = null; render(); });
+  // Toggle a category's detail card open below the section it was tapped in. Scroll only when
+  // too little of the card would be on screen, and then just far enough to show it.
+  function openCat(c, from) {
+    const closing = state.cat === c;
+    state.cat = closing ? null : c;
+    if (!closing) state.from = from;
+    render($(from + '-card'));
+    if (closing) return;
+    const r = $('detail').getBoundingClientRect();
+    if (r.top > window.innerHeight - 200) {
+      window.scrollBy({ top: Math.min(r.top - 12, r.bottom - window.innerHeight + 12), behavior: 'smooth' });
+    }
+  }
+ 
+  $('close').addEventListener('click', () => { state.cat = null; render($('detail').previousElementSibling); });
+  window.addEventListener('scroll', () => {
+    const b = document.body;
+    if (b.style.minHeight && window.scrollY + window.innerHeight <= document.querySelector('.wrap').offsetHeight) b.style.minHeight = '';
+  }, { passive: true });
   let t; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(() => render(), 150); });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => render());
   renderStatus();
