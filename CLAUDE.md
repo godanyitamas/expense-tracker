@@ -6,11 +6,11 @@ Full project context (architecture, sheet layout, spending rules, gotchas): **re
 ## Layout
 - `src/` – Apps Script sources synced with clasp (`Code.js`, `Dashboard.html`, `appsscript.json`). clasp stores `.gs` files as `.js` locally.
 - `.clasp.json` – points clasp at the bound script (`rootDir: src`).
-- `scripts/clasp-auth.sh` – writes `~/.clasprc.json` from the `CLASPRC_JSON` env var.
+- `scripts/clasp-auth.sh` – writes `~/.clasprc.json` from the `CLASPRC_B64` (base64) or `CLASPRC_JSON` env var.
 - `docs/CONTEXT.md` – project context.
 
 ## Session start
-1. Run `scripts/clasp-auth.sh`. If `CLASPRC_JSON` is missing, tell the user and continue with offline work only.
+1. Run `scripts/clasp-auth.sh`. If neither variable is set, tell the user and continue with offline work only.
 2. If `.clasp.json` does not exist yet: `clasp clone <scriptId> --rootDir src`, then commit.
 3. Run `clasp pull` and check `git status`. If the remote differs from git (the user edited in the browser editor), commit that as "Sync from Apps Script editor" before making changes.
 
