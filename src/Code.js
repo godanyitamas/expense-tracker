@@ -141,6 +141,38 @@ function listRevolut() {
   });
 }
 
+// Read-only: logs every bank/card provider Enable Banking offers whose name matches `pattern`
+// (default: American Express), in every Enable Banking country. Run it from the editor and
+// check the execution log. Changes nothing.
+const EB_COUNTRIES = ['FR', 'GB', 'IE', 'DE', 'AT', 'BE', 'NL', 'LU', 'ES', 'PT', 'IT', 'MT', 'CY', 'GR',
+  'SE', 'FI', 'DK', 'NO', 'IS', 'EE', 'LV', 'LT', 'PL', 'CZ', 'SK', 'HU', 'SI', 'HR', 'RO', 'BG', 'LI'];
+
+function listBanks(pattern) {
+  const re = pattern instanceof RegExp ? pattern
+    : typeof pattern === 'string' && pattern ? new RegExp(pattern, 'i') : /american express|amex/i;
+  let found = 0;
+  const failed = [];
+  EB_COUNTRIES.forEach(country => {
+    let list;
+    try {
+      list = eb_('get', '/aspsps', null, { country }).aspsps || [];
+    } catch (err) {
+      failed.push(`${country} (${err.message.slice(0, 80)})`);
+      return;
+    }
+    list.filter(a => re.test(a.name || '')).forEach(a => {
+      found++;
+      const { logo, ...info } = a; // the logo is a long URL/data blob, not useful here
+      console.log(`${a.country}  ${a.name}  psu_types=${a.psu_types}  ` +
+        `max_consent=${Math.round((a.maximum_consent_validity || 0) / 86400)}d  ` +
+        `beta=${!!a.beta}\n${JSON.stringify(info)}`);
+    });
+  });
+  console.log(`${found} match(es) for ${re} in ${EB_COUNTRIES.length - failed.length} countries.` +
+    (failed.length ? ` Failed: ${failed.join(', ')}` : ''));
+  return found;
+}
+
 /* ---------------- Daily run ---------------- */
 
 function dailyRun() {
