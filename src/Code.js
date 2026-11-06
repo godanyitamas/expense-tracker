@@ -181,6 +181,41 @@ function listBanks(pattern) {
   return found;
 }
 
+// Writes the raw Enable Banking records of recent transactions to the "RawSample" tab, plus which
+// fields have a value in any of them and how many carry a merchant category code (MCC).
+function saveRawSample_(days, perAccount) {
+  days = days || 14;
+  perAccount = perAccount || 15;
+  const session = getSession_();
+  if (!session) throw new Error('Not connected.');
+  const counts = {}, rows = [];
+  let total = 0, withMcc = 0;
+  for (const acc of session.accounts) {
+    const txs = fetchTransactions_(acc.uid, addDays_(new Date(), -days));
+    txs.forEach(t => {
+      total++;
+      if (t.merchant_category_code) withMcc++;
+      Object.keys(t).forEach(k => {
+        const v = t[k];
+        if (v !== null && v !== '' && !(Array.isArray(v) && !v.length)) counts[k] = (counts[k] || 0) + 1;
+      });
+    });
+    txs.slice(0, perAccount).forEach(t =>
+      rows.push([acc.label, t.booking_date || t.value_date || '', JSON.stringify(t).slice(0, 45000)]));
+  }
+  const fields = Object.keys(counts).sort().map(k => `${k} (${counts[k]})`).join(', ');
+  const sh = getOrCreate_(SpreadsheetApp.getActive(), 'RawSample');
+  sh.clear();
+  sh.getRange(1, 1, 4, 1).setValues([
+    [`saveRawSample_ run at ${new Date().toISOString()}, last ${days} days, ${session.accounts.length} account(s)`],
+    [`merchant_category_code present in ${withMcc} of ${total} transactions`],
+    [`Fields with a value (number of transactions): ${fields}`],
+    ['Account | Date | Raw transaction (JSON)'],
+  ]);
+  if (rows.length) sh.getRange(5, 1, rows.length, 3).setValues(rows);
+  console.log(`RawSample: ${rows.length} rows, MCC in ${withMcc}/${total}`);
+}
+
 /* ---------------- Daily run ---------------- */
 
 function dailyRun() {
@@ -197,6 +232,11 @@ function dailyRun() {
   // Runs only while the "Banks" tab doesn't exist; it can't break the sync. Remove afterwards.
   if (!SpreadsheetApp.getActive().getSheetByName('Banks')) {
     try { listBanks(); } catch (err) { console.log('listBanks failed: ' + err.message); }
+  }
+  // TEMPORARY (Nov 2026): save raw transactions once, to see which fields Revolut fills in
+  // (e.g. merchant_category_code). Runs only while the "RawSample" tab doesn't exist.
+  if (!SpreadsheetApp.getActive().getSheetByName('RawSample')) {
+    try { saveRawSample_(); } catch (err) { console.log('saveRawSample_ failed: ' + err.message); }
   }
   if (REMIND_DAYS.includes(daysLeft)) {
     notify_(`Revolut access expires in ${daysLeft} day(s)`, 'Tap to renew:\n' + connectUrl_());
