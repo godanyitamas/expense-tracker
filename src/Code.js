@@ -141,9 +141,9 @@ function listRevolut() {
   });
 }
 
-// Read-only: logs every bank/card provider Enable Banking offers whose name matches `pattern`
-// (default: American Express), in every Enable Banking country. Run it from the editor and
-// check the execution log. Changes nothing.
+// Logs every bank/card provider Enable Banking offers whose name matches `pattern` (default:
+// American Express), in every Enable Banking country, and writes them to the "Banks" tab.
+// Read-only towards Enable Banking. Run it from the editor and check the log or the tab.
 const EB_COUNTRIES = ['FR', 'GB', 'IE', 'DE', 'AT', 'BE', 'NL', 'LU', 'ES', 'PT', 'IT', 'MT', 'CY', 'GR',
   'SE', 'FI', 'DK', 'NO', 'IS', 'EE', 'LV', 'LT', 'PL', 'CZ', 'SK', 'HU', 'SI', 'HR', 'RO', 'BG', 'LI'];
 
@@ -151,7 +151,7 @@ function listBanks(pattern) {
   const re = pattern instanceof RegExp ? pattern
     : typeof pattern === 'string' && pattern ? new RegExp(pattern, 'i') : /american express|amex/i;
   let found = 0;
-  const failed = [];
+  const failed = [], rows = [];
   EB_COUNTRIES.forEach(country => {
     let list;
     try {
@@ -163,13 +163,21 @@ function listBanks(pattern) {
     list.filter(a => re.test(a.name || '')).forEach(a => {
       found++;
       const { logo, ...info } = a; // the logo is a long URL/data blob, not useful here
+      rows.push([a.country, a.name, String(a.psu_types || ''), Math.round((a.maximum_consent_validity || 0) / 86400),
+        !!a.beta, JSON.stringify(info)]);
       console.log(`${a.country}  ${a.name}  psu_types=${a.psu_types}  ` +
         `max_consent=${Math.round((a.maximum_consent_validity || 0) / 86400)}d  ` +
         `beta=${!!a.beta}\n${JSON.stringify(info)}`);
     });
   });
-  console.log(`${found} match(es) for ${re} in ${EB_COUNTRIES.length - failed.length} countries.` +
-    (failed.length ? ` Failed: ${failed.join(', ')}` : ''));
+  const summary = `${found} match(es) for ${re} in ${EB_COUNTRIES.length - failed.length} countries.` +
+    (failed.length ? ` Failed: ${failed.join(', ')}` : '');
+  console.log(summary);
+  const sh = getOrCreate_(SpreadsheetApp.getActive(), 'Banks');
+  sh.clear();
+  sh.getRange(1, 1, 2, 1).setValues([[`listBanks run at ${new Date().toISOString()}`], [summary]]);
+  sh.getRange(3, 1, 1, 6).setValues([['Country', 'Name', 'PSU types', 'Max consent (days)', 'Beta', 'Details']]);
+  if (rows.length) sh.getRange(4, 1, rows.length, 6).setValues(rows);
   return found;
 }
 
@@ -185,6 +193,11 @@ function dailyRun() {
     return notify_('Revolut access expired', 'Tap to reconnect (takes a minute):\n' + connectUrl_());
   }
   syncTransactions();
+  // TEMPORARY (Nov 2026): run listBanks once, to check whether Enable Banking offers Amex.
+  // Runs only while the "Banks" tab doesn't exist; it can't break the sync. Remove afterwards.
+  if (!SpreadsheetApp.getActive().getSheetByName('Banks')) {
+    try { listBanks(); } catch (err) { console.log('listBanks failed: ' + err.message); }
+  }
   if (REMIND_DAYS.includes(daysLeft)) {
     notify_(`Revolut access expires in ${daysLeft} day(s)`, 'Tap to renew:\n' + connectUrl_());
   }
