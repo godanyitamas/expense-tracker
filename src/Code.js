@@ -304,11 +304,86 @@ function syncTransactions() {
     sheet.getRange(2, 1, sheet.getLastRow() - 1, TX_HEADERS.length).sort({ column: COL.date, ascending: false });
   }
   applyRules_();
+  try { saveBalances_(accounts, now); } catch (err) { console.log('Balances not saved: ' + err.message); }
   props().setProperty('LAST_SYNC', now.toISOString());
   console.log(`Added ${newRows.length} transactions`);
   // Rows from the accounts that worked are saved above; report the failures afterwards.
   if (errors.length) throw new Error(`Added ${newRows.length} transactions, but sync failed for ` + errors.join('; '));
   return newRows.length;
+}
+
+// Balances tab: the latest balances of every synced account, overwritten on each sync.
+// One row per account and balance type, as Enable Banking reports them (raw JSON kept in G).
+const BALANCES_SHEET = 'Balances';
+const BALANCE_HEADERS = ['Account', 'Type', 'Amount', 'Currency', 'Reference date', 'Fetched at', 'Raw'];
+
+function saveBalances_(accounts, now) {
+  const rows = [];
+  for (const acc of accounts) {
+    try {
+      const r = eb_('get', `/accounts/${encodeURIComponent(acc.uid)}/balances`);
+      (r.balances || []).forEach(b => rows.push([acc.label, b.balance_type || '',
+        Number((b.balance_amount || {}).amount), (b.balance_amount || {}).currency || '',
+        b.reference_date || '', now, JSON.stringify(b)]));
+    } catch (err) {
+      rows.push([acc.label, 'ERROR', '', '', '', now, err.message]); // one account failing doesn't hide the others
+    }
+  }
+  const sh = getOrCreate_(SpreadsheetApp.getActive(), BALANCES_SHEET);
+  sh.clear();
+  sh.getRange(1, 1, 1, BALANCE_HEADERS.length).setValues([BALANCE_HEADERS]);
+  if (rows.length) sh.getRange(2, 1, rows.length, BALANCE_HEADERS.length).setValues(rows);
+}
+
+// The balance to show for an account: what can be spent now if the bank reports it, else the booked one.
+// ISO 20022 types: ITAV interim available, CLAV closing available, XPCD expected, ITBD interim booked,
+// CLBD closing booked.
+const BALANCE_PREFERENCE = ['ITAV', 'CLAV', 'XPCD', 'ITBD', 'CLBD'];
+
+function pickBalance_(rows) {
+  const ok = rows.filter(r => r.type !== 'ERROR' && isFinite(r.amount));
+  const rank = r => { const i = BALANCE_PREFERENCE.indexOf(r.type); return i < 0 ? 99 : i; };
+  return ok.sort((a, b) => rank(a) - rank(b))[0] || null;
+}
+
+// What is owed on Amex: purchases minus refunds minus bill payments received, from the booked
+// Amex rows of the Transactions tab (amounts are signed, negative = spent). The card was new on
+// 6 Nov 2026, so the full history is the current balance. Pending purchases are not included.
+function amexOwed_(txRows) {
+  const sum = txRows
+    .filter(r => String(r[COL.account - 1]).startsWith('Amex ') && r[COL.currency - 1] === MAIN_CURRENCY)
+    .reduce((s, r) => s + (Number(r[COL.amount - 1]) || 0), 0);
+  return Math.round(-sum * 100) / 100;
+}
+
+// "Right now" numbers for the dashboard: personal Revolut balance, joint account balance,
+// Amex to pay, and what is left to spend on Revolut once the Amex bill is covered.
+function getMoneyNow_() {
+  const ss = SpreadsheetApp.getActive();
+  const bs = ss.getSheetByName(BALANCES_SHEET);
+  const rows = bs && bs.getLastRow() > 1
+    ? bs.getRange(2, 1, bs.getLastRow() - 1, 6).getValues()
+      .map(r => ({ account: String(r[0]), type: String(r[1]), amount: r[2] === '' ? NaN : Number(r[2]),
+        currency: String(r[3]), at: r[5] instanceof Date ? r[5].toISOString() : String(r[5]) }))
+    : [];
+  const byAccount = {};
+  rows.forEach(r => (byAccount[r.account] = byAccount[r.account] || []).push(r));
+  const isJoint = a => /KATIA OUTAYEB/i.test(a); // same rule as the ChartData formulas
+  const pick = test => {
+    const acc = Object.keys(byAccount).find(a => test(a));
+    const b = acc && pickBalance_(byAccount[acc]);
+    return b ? { account: b.account, amount: b.amount, currency: b.currency, type: b.type, at: b.at } : null;
+  };
+  const revolut = pick(a => !a.startsWith('Amex ') && !isJoint(a));
+  const joint = pick(a => isJoint(a));
+  let amex = null;
+  if (getSession_('amex')) {
+    const tx = ss.getSheetByName(TX_SHEET);
+    const data = tx.getLastRow() > 1 ? tx.getRange(2, 1, tx.getLastRow() - 1, TX_HEADERS.length).getValues() : [];
+    amex = { owed: amexOwed_(data) };
+  }
+  return { revolut, joint, amex,
+    freeToSpend: revolut ? Math.round((revolut.amount - (amex ? amex.owed : 0)) * 100) / 100 : null };
 }
 
 function fetchTransactions_(uid, from) {
@@ -508,6 +583,7 @@ function getDashboardData_() {
     validUntil: (session && session.valid_until) || '',
     renewUrl,
     connections,
+    now: (() => { try { return getMoneyNow_(); } catch (e) { console.log('getMoneyNow_: ' + e.message); return null; } })(),
   };
 }
 

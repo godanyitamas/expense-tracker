@@ -64,6 +64,13 @@
   .empty { font-size: 13px; color: var(--muted); padding: 8px 0; }
   .foot { font-size: 12px; color: var(--muted); margin: 0; }
   .hidden { display: none !important; }
+  .now h2 { font-size: 17px; font-weight: 600; margin: 0 0 10px; }
+  .nowgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .nowcell .label { font-size: 12px; color: var(--muted); }
+  .nowcell .value { font: 400 24px/1.2 ui-serif, Georgia, serif; margin-top: 4px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .nowcell .note { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .nowcell.main .value { font-weight: 600; }
+  .now .foot2 { font-size: 12px; color: var(--muted); margin: 10px 0 0; }
 </style>
 </head>
 <body>
@@ -73,6 +80,15 @@
     <p class="take" id="take"></p>
   </header>
   <div class="warn hidden" id="warn"></div>
+  <section class="card now hidden" id="now">
+    <h2>Right now</h2>
+    <div class="nowgrid" id="now-grid">
+      <div class="nowcell"><div class="label">On Revolut</div><div class="value" id="n-rev"></div><div class="note" id="n-rev-note"></div></div>
+      <div class="nowcell" id="n-amex-cell"><div class="label">Amex to pay</div><div class="value" id="n-amex"></div><div class="note">not yet debited</div></div>
+      <div class="nowcell main" id="n-free-cell"><div class="label">Free to spend</div><div class="value" id="n-free"></div><div class="note">Revolut minus Amex</div></div>
+    </div>
+    <p class="foot2" id="n-foot"></p>
+  </section>
   <nav class="chips" id="chips" aria-label="Month"></nav>
  
   <section class="kpis">
@@ -345,6 +361,34 @@
     if (j >= 0) S('rect', { x: labelW + j * cw + 0.5, y: headH - 2, width: cw - 1, height: cats.length * rowH + 2, rx: 7, fill: 'none', stroke: css('--fg'), 'stroke-width': 1.5 }, svg);
   }
  
+  // "Right now": personal Revolut balance, what Amex will debit, and what's left after that.
+  // Doesn't depend on the selected month, so it is rendered once.
+  function renderNow() {
+    const n = D.now;
+    if (!n || !n.revolut) return;
+    const kind = { ITAV: 'available', CLAV: 'available', XPCD: 'expected', ITBD: 'booked', CLBD: 'booked' };
+    const money = (v) => (v < 0 ? '−' : '') + eur0.format(Math.abs(v));
+    $('n-rev').textContent = money(n.revolut.amount);
+    const at = n.revolut.at ? new Date(n.revolut.at) : null;
+    $('n-rev-note').textContent = (kind[n.revolut.type] || 'balance') +
+      (at && !isNaN(at) ? ' · ' + at.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
+    const hasAmex = !!n.amex;
+    $('n-amex-cell').classList.toggle('hidden', !hasAmex);
+    $('n-free-cell').classList.toggle('hidden', !hasAmex);
+    if (hasAmex) {
+      $('n-amex').textContent = money(n.amex.owed);
+      $('n-free').textContent = money(n.freeToSpend);
+      $('n-free').className = 'value ' + (n.freeToSpend < 0 ? 'up' : 'down');
+    } else {
+      $('now-grid').style.gridTemplateColumns = '1fr';
+    }
+    const foot = [];
+    if (n.joint) foot.push('Joint account: ' + money(n.joint.amount));
+    foot.push('Savings vaults are not included.');
+    $('n-foot').textContent = foot.join(' · ');
+    $('now').classList.remove('hidden');
+  }
+ 
   function renderStatus() {
     const parts = [];
     if (D.syncedAt) parts.push('Synced ' + new Date(D.syncedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }));
@@ -424,6 +468,7 @@
   let t; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(() => render(), 150); });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => render());
   renderStatus();
+  renderNow();
   render();
 })();
 </script>

@@ -5,23 +5,38 @@
 const fs = require('fs'), vm = require('vm'), assert = require('assert');
 const code = fs.readFileSync(process.argv[2] || require("path").join(__dirname, "../../src/Code.js"), "utf8");
 
-function setup({ sessions = {}, failUids = [] } = {}) {
-  const store = {}, mails = [], rows = [], eb = [];
+// A fake sheet: grid[0] is row 1. Supports what Code.js uses (getRange, setValues, clear, sort).
+function fakeSheet(name, grid = []) {
+  const sh = {
+    grid, getName: () => name,
+    getLastRow: () => grid.length,
+    clear: () => { grid.length = 0; },
+    getRange: (r0, c0, nr = 1, nc = 1) => ({
+      getValues: () => grid.slice(r0 - 1, r0 - 1 + nr).map((r) => Array.from({ length: nc }, (_, j) => (r[c0 - 1 + j] ?? ''))),
+      setValues: (v) => { v.forEach((row, i) => { grid[r0 - 1 + i] = grid[r0 - 1 + i] || []; row.forEach((x, j) => { grid[r0 - 1 + i][c0 - 1 + j] = x; }); }); },
+      sort: () => {},
+    }),
+  };
+  return sh;
+}
+
+function setup({ sessions = {}, failUids = [], failBalances = [], balances = {} } = {}) {
+  const store = {}, mails = [], eb = [];
   const P = { getProperty: (k) => (k in store ? store[k] : null), setProperty: (k, v) => { store[k] = String(v); },
     setProperties: (o) => Object.assign(store, o), deleteProperty: (k) => { delete store[k]; } };
   P.setProperty('REDIRECT_URL', 'https://script.google.com/macros/s/X/exec');
   for (const [prop, s] of Object.entries(sessions)) P.setProperty(prop, JSON.stringify(s));
-  const range = (r0, c0, nr, nc) => ({
-    getValues: () => rows.slice(r0 - 2, r0 - 2 + nr).map((r) => r.slice(c0 - 1, c0 - 1 + nc)),
-    setValues: (v) => { v.forEach((row, i) => { rows[r0 - 2 + i] = rows[r0 - 2 + i] || []; row.forEach((x, j) => { rows[r0 - 2 + i][c0 - 1 + j] = x; }); }); },
-    sort: () => {},
-  });
-  const txSheet = { getLastRow: () => rows.length + 1, getRange: range, getName: () => 'Transactions' };
-  const rules = { getLastRow: () => 1, getRange: () => ({ getValues: () => [] }) };
+  const sheets = {
+    Transactions: fakeSheet('Transactions', [['Key', 'Date', 'Amount', 'Currency', 'Merchant', 'Description', 'Category', 'Account', 'Loaded at']]),
+    Rules: fakeSheet('Rules', [['Merchant contains', 'Category']]),
+  };
+  const ss = { getSheetByName: (n) => sheets[n] || null, insertSheet: (n) => (sheets[n] = fakeSheet(n)) };
+  // Data rows of the Transactions tab (without the header), as before.
+  const rows = new Proxy([], { get: (_, k) => { const d = sheets.Transactions.grid.slice(1); const v = d[k]; return typeof v === 'function' ? v.bind(d) : v; } });
   const ctx = {
     console: { log: () => {} },
     PropertiesService: { getScriptProperties: () => P },
-    SpreadsheetApp: { getActive: () => ({ getSheetByName: (n) => (n === 'Transactions' ? txSheet : n === 'Rules' ? rules : null) }) },
+    SpreadsheetApp: { getActive: () => ss },
     MailApp: { sendEmail: (...a) => mails.push(a) }, GmailApp: { sendEmail: (...a) => mails.push(a) },
     Session: { getScriptTimeZone: () => 'Europe/Paris', getEffectiveUser: () => ({ getEmail: () => 'me@example.com' }), getActiveUser: () => ({ getEmail: () => 'me@example.com' }) },
     Utilities: { getUuid: () => 'uuid-1', formatDate: (d) => d.toISOString().slice(0, 10), base64EncodeWebSafe: (x) => 'h', computeDigest: () => [], DigestAlgorithm: {} },
@@ -34,6 +49,12 @@ function setup({ sessions = {}, failUids = [] } = {}) {
     eb.push([method, path, body, query]);
     if (path === '/aspsps') return { aspsps: [{ name: 'Revolut', country: 'FR', psu_types: ['personal'], maximum_consent_validity: 15552000 },
       { name: 'American Express', country: 'FR', psu_types: ['business', 'personal'], maximum_consent_validity: 15552000 }] };
+    const bal = path.match(/^\/accounts\/(.+)\/balances$/);
+    if (bal) {
+      const uid = decodeURIComponent(bal[1]);
+      if (failBalances.includes(uid)) throw new Error('balances unavailable');
+      return { balances: balances[uid] || [] };
+    }
     if (path === '/auth') return { url: 'https://auth.example/' + body.aspsp.name };
     if (path === '/sessions') return { session_id: 'S-new', accounts: [{ uid: 'amex-1', currency: 'EUR', name: 'Tamas Godanyi' }], access: { valid_until: '2027-05-01T00:00:00Z' } };
     throw new Error('unexpected ' + path);
@@ -43,7 +64,7 @@ function setup({ sessions = {}, failUids = [] } = {}) {
     return [{ transaction_id: uid + '-t1', booking_date: '2026-11-06', status: 'BOOK', credit_debit_indicator: 'DBIT',
       transaction_amount: { amount: '10.00', currency: 'EUR' }, creditor: { name: 'Shop ' + uid }, remittance_information: [] }];
   };
-  return { ctx, store, mails, rows, eb };
+  return { ctx, store, mails, rows, eb, sheets };
 }
 const future = '2027-04-30T00:00:00Z', past = '2026-11-01T00:00:00Z';
 const rev = { session_id: 'R', accounts: [{ uid: 'rev-1', label: 'EUR Tamás Godányi …8462' }], valid_until: future };
@@ -105,4 +126,32 @@ t = setup({ sessions: { SESSION: rev, SESSION_AMEX: amex(future) } });
 const conns = vm.runInContext(`BANK_IDS.filter(b => getSession_(b)).map(b => [BANKS[b].name, connectUrl_(b)])`, t.ctx);
 assert.deepStrictEqual(JSON.parse(JSON.stringify(conns)), [['Revolut', 'https://script.google.com/macros/s/X/exec?connect=1'], ['Amex', 'https://script.google.com/macros/s/X/exec?connect=amex']]);
 console.log('8 ok  connections:', JSON.stringify(conns));
+// 9. Balances: saved for every account during the sync; one failing account doesn't stop the
+//    others or the sync. The dashboard picks the available balance and subtracts what Amex is owed.
+const B = (type, amount) => ({ balance_type: type, balance_amount: { amount: String(amount), currency: 'EUR' }, reference_date: '2026-11-07' });
+const joint = { session_id: 'R', accounts: [{ uid: 'rev-1', label: 'EUR Tamás Godányi …8462' }, { uid: 'rev-2', label: 'EUR KATIA OUTAYEB & TAMAS ARON GODANYI …3504' }], valid_until: future };
+t = setup({ sessions: { SESSION: joint, SESSION_AMEX: amex(future) },
+  balances: { 'rev-1': [B('CLBD', 1200), B('ITAV', 1180.5)], 'rev-2': [B('ITAV', 300)] }, failBalances: ['amex-1'] });
+t.ctx.dailyRun();
+const bal = t.sheets.Balances.grid;
+assert.deepStrictEqual(bal[0].slice(0, 3), ['Account', 'Type', 'Amount']);
+assert.deepStrictEqual(bal.slice(1).map((r) => [r[0].slice(0, 9), r[1], r[2]]),
+  [['EUR Tamás', 'CLBD', 1200], ['EUR Tamás', 'ITAV', 1180.5], ['EUR KATIA', 'ITAV', 300], ['Amex EUR ', 'ERROR', '']]);
+assert.strictEqual(t.rows.length, 3); // all three accounts' transactions still synced
+// Amex: one €10 purchase synced above; add a refund (+4) and a non-EUR row that must be ignored.
+t.sheets.Transactions.grid.push(['amex-1:r', '2026-11-07', 4, 'EUR', 'Shop', '', 'Shopping', 'Amex EUR Tamas Godanyi'],
+  ['amex-1:h', '2026-11-07', -99, 'HUF', 'Shop', '', 'Shopping', 'Amex EUR Tamas Godanyi']);
+const now = JSON.parse(JSON.stringify(t.ctx.getMoneyNow_()));
+assert.strictEqual(now.revolut.type, 'ITAV'); assert.strictEqual(now.revolut.amount, 1180.5);
+assert.strictEqual(now.joint.amount, 300);
+assert.strictEqual(now.amex.owed, 6);           // 10 spent − 4 refunded
+assert.strictEqual(now.freeToSpend, 1174.5);    // 1180.5 − 6
+console.log('9 ok  balances saved (Amex error kept as a row), free to spend =', now.freeToSpend, 'from', now.revolut.type);
+
+// 10. Without Amex connected: no Amex line, free to spend = Revolut balance; booked-only fallback.
+t = setup({ sessions: { SESSION: rev }, balances: { 'rev-1': [B('CLBD', 950)] } });
+t.ctx.dailyRun();
+const now2 = JSON.parse(JSON.stringify(t.ctx.getMoneyNow_()));
+assert.strictEqual(now2.amex, null); assert.strictEqual(now2.revolut.type, 'CLBD'); assert.strictEqual(now2.freeToSpend, 950);
+console.log('10 ok no Amex: free to spend = booked balance', now2.freeToSpend);
 console.log('ALL SERVER TESTS PASSED');
