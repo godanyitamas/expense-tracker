@@ -20,7 +20,7 @@ function fakeSheet(name, grid = []) {
   return sh;
 }
 
-function setup({ sessions = {}, failUids = [], failBalances = [], balances = {} } = {}) {
+function setup({ sessions = {}, failUids = [], failBalances = [], balances = {}, pending = {} } = {}) {
   const store = {}, mails = [], eb = [];
   const P = { getProperty: (k) => (k in store ? store[k] : null), setProperty: (k, v) => { store[k] = String(v); },
     setProperties: (o) => Object.assign(store, o), deleteProperty: (k) => { delete store[k]; } };
@@ -63,8 +63,10 @@ function setup({ sessions = {}, failUids = [], failBalances = [], balances = {} 
   };
   ctx.fetchTransactions_ = (uid) => {
     if (failUids.includes(uid)) throw new Error('consent revoked');
-    return [{ transaction_id: uid + '-t1', booking_date: '2026-11-06', status: 'BOOK', credit_debit_indicator: 'DBIT',
-      transaction_amount: { amount: '10.00', currency: 'EUR' }, creditor: { name: 'Shop ' + uid }, remittance_information: [] }];
+    return (pending[uid] || []).map((amount, i) => ({ transaction_id: `${uid}-p${i}`, booking_date: '2026-11-07', status: 'PDNG',
+      credit_debit_indicator: amount < 0 ? 'DBIT' : 'CRDT', transaction_amount: { amount: String(Math.abs(amount)), currency: 'EUR' },
+      creditor: { name: 'Pending shop' }, remittance_information: [] })).concat([{ transaction_id: uid + '-t1', booking_date: '2026-11-06', status: 'BOOK', credit_debit_indicator: 'DBIT',
+      transaction_amount: { amount: '10.00', currency: 'EUR' }, creditor: { name: 'Shop ' + uid }, remittance_information: [] }]);
   };
   return { ctx, store, mails, rows, eb, sheets };
 }
@@ -168,4 +170,23 @@ assert.ok(t.rows.some((r) => r[0] === 'amex-9:amex-9-t1'));
 const st = t.sheets.Balances.grid.find((r) => r[0] === 'Status: Amex');
 assert.strictEqual(st[2], 1); assert.match(st[6], /"eb_status":"AUTHORIZED"/);
 console.log('11 ok empty Amex consent refreshed:', fixed.accounts[0].label, '| status row:', st[6]);
+// 12. Pending: saved to the Pending tab, never to Transactions; pending Amex purchases count in
+//     "Amex to pay" (booked + pending), Revolut pending ones don't (its available balance has them).
+t = setup({ sessions: { SESSION: rev, SESSION_AMEX: amex(future) }, balances: { 'rev-1': [B('ITAV', 500)] },
+  pending: { 'amex-1': [-42.5, -7.5], 'rev-1': [-3] } });
+t.ctx.dailyRun();
+assert.deepStrictEqual(t.rows.map((r) => r[0]).sort(), ['amex-1:amex-1-t1', 'rev-1:rev-1-t1']); // booked only
+const pend = t.sheets.Pending.grid;
+assert.deepStrictEqual(pend.slice(1).map((r) => [r[1], r[6]]).sort((a, b) => a[0] - b[0]),
+  [[-42.5, 'Amex EUR Tamas Godanyi'], [-7.5, 'Amex EUR Tamas Godanyi'], [-3, 'EUR Tamás Godányi …8462']]);
+const now3 = JSON.parse(JSON.stringify(t.ctx.getMoneyNow_()));
+assert.deepStrictEqual(now3.amex, { owed: 60, booked: 10, pending: 50 });
+assert.strictEqual(now3.freeToSpend, 440);
+console.log('12 ok pending kept apart; Amex to pay =', now3.amex.owed, '(booked', now3.amex.booked, '+ pending', now3.amex.pending + '), free =', now3.freeToSpend);
+// The next sync after booking: pending list is rebuilt from the bank, so nothing is counted twice.
+t.ctx.fetchTransactions_ = (uid) => [{ transaction_id: uid + '-t1', booking_date: '2026-11-06', status: 'BOOK', credit_debit_indicator: 'DBIT',
+  transaction_amount: { amount: '10.00', currency: 'EUR' }, creditor: { name: 'Shop' }, remittance_information: [] }];
+t.ctx.syncTransactions();
+assert.strictEqual(t.sheets.Pending.grid.length, 1);
+console.log('   ok next sync without pending: Pending tab emptied');
 console.log('ALL SERVER TESTS PASSED');

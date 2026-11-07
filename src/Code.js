@@ -272,7 +272,7 @@ function syncTransactions() {
   const seen = new Set(data.map(r => r[0]));
   const rules = loadRules_();
   const now = new Date();
-  const newRows = [];
+  const newRows = [], pendingRows = [];
 
   for (const acc of accounts) {
     try {
@@ -293,7 +293,10 @@ function syncTransactions() {
       }
 
       for (const t of txs) {
-        if (t.status && t.status !== 'BOOK') continue; // skip pending, they come back once booked
+        if (t.status && t.status !== 'BOOK') { // pending: kept apart, they come back once booked
+          pendingRows.push(toRow_(acc, t, now, rules).slice(1, 8));
+          continue;
+        }
         const row = toRow_(acc, t, now, rules);
         if (seen.has(row[0])) continue;
         seen.add(row[0]);
@@ -310,6 +313,7 @@ function syncTransactions() {
   }
   applyRules_();
   try { saveBalances_(accounts, now); } catch (err) { console.log('Balances not saved: ' + err.message); }
+  try { savePending_(pendingRows); } catch (err) { console.log('Pending not saved: ' + err.message); }
   props().setProperty('LAST_SYNC', now.toISOString());
   console.log(`Added ${newRows.length} transactions`);
   // Rows from the accounts that worked are saved above; report the failures afterwards.
@@ -346,6 +350,25 @@ function saveBalances_(accounts, now) {
   sh.clear();
   sh.getRange(1, 1, 1, BALANCE_HEADERS.length).setValues([BALANCE_HEADERS]);
   if (rows.length) sh.getRange(2, 1, rows.length, BALANCE_HEADERS.length).setValues(rows);
+}
+
+// Pending tab: the transactions the banks report as not yet booked, overwritten on every sync.
+// Same columns as Transactions B:H. A purchase leaves this list in the sync that books it.
+const PENDING_SHEET = 'Pending';
+const PENDING_HEADERS = ['Date', 'Amount', 'Currency', 'Merchant', 'Description', 'Category', 'Account'];
+
+function savePending_(rows) {
+  const sh = getOrCreate_(SpreadsheetApp.getActive(), PENDING_SHEET);
+  sh.clear();
+  sh.getRange(1, 1, 1, PENDING_HEADERS.length).setValues([PENDING_HEADERS]);
+  if (rows.length) sh.getRange(2, 1, rows.length, PENDING_HEADERS.length).setValues(rows);
+}
+
+// Pending Amex spending (positive = owed), from the Pending tab rows (columns as PENDING_HEADERS).
+function amexPending_(rows) {
+  const sum = rows.filter(r => String(r[6]).startsWith('Amex ') && r[2] === MAIN_CURRENCY)
+    .reduce((s, r) => s + (Number(r[1]) || 0), 0);
+  return Math.round(-sum * 100) / 100;
 }
 
 // The balance to show for an account: what can be spent now if the bank reports it, else the booked one.
@@ -394,7 +417,10 @@ function getMoneyNow_() {
   if (getSession_('amex')) {
     const tx = ss.getSheetByName(TX_SHEET);
     const data = tx.getLastRow() > 1 ? tx.getRange(2, 1, tx.getLastRow() - 1, TX_HEADERS.length).getValues() : [];
-    amex = { owed: amexOwed_(data) };
+    const ps = ss.getSheetByName(PENDING_SHEET);
+    const pending = ps && ps.getLastRow() > 1 ? amexPending_(ps.getRange(2, 1, ps.getLastRow() - 1, PENDING_HEADERS.length).getValues()) : 0;
+    const booked = amexOwed_(data);
+    amex = { owed: Math.round((booked + pending) * 100) / 100, booked, pending };
   }
   return { revolut, joint, amex,
     freeToSpend: revolut ? Math.round((revolut.amount - (amex ? amex.owed : 0)) * 100) / 100 : null };

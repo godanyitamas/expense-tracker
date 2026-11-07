@@ -84,7 +84,7 @@
     <h2>Right now</h2>
     <div class="nowgrid" id="now-grid">
       <div class="nowcell"><div class="label">On Revolut</div><div class="value" id="n-rev"></div><div class="note" id="n-rev-note"></div></div>
-      <div class="nowcell" id="n-amex-cell"><div class="label">Amex to pay</div><div class="value" id="n-amex"></div><div class="note">not yet debited</div></div>
+      <div class="nowcell" id="n-amex-cell"><div class="label">Amex to pay</div><div class="value" id="n-amex"></div><div class="note" id="n-amex-note">not yet debited</div></div>
       <div class="nowcell main" id="n-free-cell"><div class="label">Free to spend</div><div class="value" id="n-free"></div><div class="note">Revolut minus Amex</div></div>
     </div>
     <p class="foot2" id="n-foot"></p>
@@ -377,6 +377,7 @@
     $('n-free-cell').classList.toggle('hidden', !hasAmex);
     if (hasAmex) {
       $('n-amex').textContent = money(n.amex.owed);
+      $('n-amex-note').textContent = n.amex.pending ? `incl. ${eur0.format(n.amex.pending)} pending` : 'not yet debited';
       $('n-free').textContent = money(n.freeToSpend);
       $('n-free').className = 'value ' + (n.freeToSpend < 0 ? 'up' : 'down');
     } else {
