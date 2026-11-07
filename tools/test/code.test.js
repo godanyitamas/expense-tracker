@@ -55,6 +55,8 @@ function setup({ sessions = {}, failUids = [], failBalances = [], balances = {} 
       if (failBalances.includes(uid)) throw new Error('balances unavailable');
       return { balances: balances[uid] || [] };
     }
+    if (path === '/sessions/A-empty') return { status: 'AUTHORIZED', accounts: ['amex-9'] };
+    if (path === '/accounts/amex-9/details') return { currency: 'EUR', name: 'Tamas Godanyi' };
     if (path === '/auth') return { url: 'https://auth.example/' + body.aspsp.name };
     if (path === '/sessions') return { session_id: 'S-new', accounts: [{ uid: 'amex-1', currency: 'EUR', name: 'Tamas Godanyi' }], access: { valid_until: '2027-05-01T00:00:00Z' } };
     throw new Error('unexpected ' + path);
@@ -136,7 +138,8 @@ t.ctx.dailyRun();
 const bal = t.sheets.Balances.grid;
 assert.deepStrictEqual(bal[0].slice(0, 3), ['Account', 'Type', 'Amount']);
 assert.deepStrictEqual(bal.slice(1).map((r) => [r[0].slice(0, 9), r[1], r[2]]),
-  [['EUR Tamás', 'CLBD', 1200], ['EUR Tamás', 'ITAV', 1180.5], ['EUR KATIA', 'ITAV', 300], ['Amex EUR ', 'ERROR', '']]);
+  [['EUR Tamás', 'CLBD', 1200], ['EUR Tamás', 'ITAV', 1180.5], ['EUR KATIA', 'ITAV', 300], ['Amex EUR ', 'ERROR', ''],
+   ['Status: R', 'STATUS', 2], ['Status: A', 'STATUS', 1]]);
 assert.strictEqual(t.rows.length, 3); // all three accounts' transactions still synced
 // Amex: one €10 purchase synced above; add a refund (+4) and a non-EUR row that must be ignored.
 t.sheets.Transactions.grid.push(['amex-1:r', '2026-11-07', 4, 'EUR', 'Shop', '', 'Shopping', 'Amex EUR Tamas Godanyi'],
@@ -154,4 +157,15 @@ t.ctx.dailyRun();
 const now2 = JSON.parse(JSON.stringify(t.ctx.getMoneyNow_()));
 assert.strictEqual(now2.amex, null); assert.strictEqual(now2.revolut.type, 'CLBD'); assert.strictEqual(now2.freeToSpend, 950);
 console.log('10 ok no Amex: free to spend = booked balance', now2.freeToSpend);
+// 11. Amex consent stored with no accounts (as seen live on 7 Nov 2026): the sync asks Enable
+//     Banking again, saves the account with a proper label, and syncs it the same run.
+t = setup({ sessions: { SESSION: rev, SESSION_AMEX: { session_id: 'A-empty', accounts: [], valid_until: future } } });
+t.ctx.dailyRun();
+const fixed = JSON.parse(t.store.SESSION_AMEX);
+assert.deepStrictEqual(fixed.accounts, [{ uid: 'amex-9', label: 'Amex EUR Tamas Godanyi' }]);
+assert.strictEqual(fixed.status, 'AUTHORIZED');
+assert.ok(t.rows.some((r) => r[0] === 'amex-9:amex-9-t1'));
+const st = t.sheets.Balances.grid.find((r) => r[0] === 'Status: Amex');
+assert.strictEqual(st[2], 1); assert.match(st[6], /"eb_status":"AUTHORIZED"/);
+console.log('11 ok empty Amex consent refreshed:', fixed.accounts[0].label, '| status row:', st[6]);
 console.log('ALL SERVER TESTS PASSED');

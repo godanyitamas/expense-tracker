@@ -258,6 +258,11 @@ function activeBanks_() {
 function syncTransactions() {
   const banks = activeBanks_();
   if (!banks.length) throw new Error('No active bank connection. Open the web app link to connect Revolut.');
+  // Some banks only list the consented accounts after the redirect: ask again while there are none.
+  banks.forEach(bank => {
+    if (getSession_(bank).accounts.length) return;
+    try { refreshAccounts_(bank); } catch (err) { console.log(`Could not refresh ${bank} accounts: ` + err.message); }
+  });
   const accounts = [].concat(...banks.map(bank => getSession_(bank).accounts));
   const errors = [];
 
@@ -329,6 +334,14 @@ function saveBalances_(accounts, now) {
       rows.push([acc.label, 'ERROR', '', '', '', now, err.message]); // one account failing doesn't hide the others
     }
   }
+  // One status row per connected bank, so the state of each consent is visible in the sheet.
+  BANK_IDS.forEach(bank => {
+    const sess = getSession_(bank);
+    if (!sess) return;
+    const st = { accounts: sess.accounts.length, valid_until: sess.valid_until, active: daysLeft_(sess) > 0,
+      eb_status: sess.status || '', refreshed_at: sess.refreshed_at || '' };
+    rows.push([`Status: ${BANKS[bank].name}`, 'STATUS', sess.accounts.length, '', sess.valid_until || '', now, JSON.stringify(st)]);
+  });
   const sh = getOrCreate_(SpreadsheetApp.getActive(), BALANCES_SHEET);
   sh.clear();
   sh.getRange(1, 1, 1, BALANCE_HEADERS.length).setValues([BALANCE_HEADERS]);
@@ -367,6 +380,7 @@ function getMoneyNow_() {
         currency: String(r[3]), at: r[5] instanceof Date ? r[5].toISOString() : String(r[5]) }))
     : [];
   const byAccount = {};
+  rows.splice(0, rows.length, ...rows.filter(r => r.type !== 'STATUS'));
   rows.forEach(r => (byAccount[r.account] = byAccount[r.account] || []).push(r));
   const isJoint = a => /KATIA OUTAYEB/i.test(a); // same rule as the ChartData formulas
   const pick = test => {
@@ -630,6 +644,25 @@ function finishAuth_(code, state) {
 function accountLabel_(a) {
   const iban = (a.account_id && a.account_id.iban) || '';
   return [a.currency, a.name, iban ? '…' + iban.slice(-4) : ''].filter(Boolean).join(' ') || a.uid.slice(0, 8);
+}
+
+// Re-reads a consent's account list from Enable Banking and saves it (with labels from the account
+// details). Also records the consent status Enable Banking reports, for the Balances status rows.
+function refreshAccounts_(bank) {
+  const cfg = BANKS[bank], session = getSession_(bank);
+  const r = eb_('get', `/sessions/${encodeURIComponent(session.session_id)}`);
+  const uids = (r.accounts || []).map(a => (typeof a === 'string' ? a : a.uid)).filter(Boolean);
+  session.accounts = uids.map(uid => {
+    try {
+      return { uid, label: cfg.label(Object.assign({ uid }, eb_('get', `/accounts/${encodeURIComponent(uid)}/details`))) };
+    } catch (err) {
+      return { uid, label: `${cfg.name} ${uid.slice(0, 8)}` };
+    }
+  });
+  session.status = r.status || '';
+  session.refreshed_at = new Date().toISOString();
+  props().setProperty(cfg.prop, JSON.stringify(session));
+  return session;
 }
 
 function getSession_(bank) {
