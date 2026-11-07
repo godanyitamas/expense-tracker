@@ -44,8 +44,8 @@ const data = {
   now: {
     revolut: { account: 'EUR Mock …0001', amount: 1843.2, currency: 'EUR', type: 'ITAV', at: now.toISOString() },
     joint: { account: 'EUR Mock joint …0002', amount: 412.35, currency: 'EUR', type: 'ITAV', at: now.toISOString() },
-    amex: { owed: 236.4, booked: 194.1, pending: 42.3 },
-    freeToSpend: 1606.8,
+    amex: { owed: 194.1, booked: 194.1, pending: 0 },
+    freeToSpend: 1649.1,
   },
   // Amex expiring soon, so the preview shows the expiry warning too.
   connections: [

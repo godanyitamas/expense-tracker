@@ -377,7 +377,9 @@
     $('n-free-cell').classList.toggle('hidden', !hasAmex);
     if (hasAmex) {
       $('n-amex').textContent = money(n.amex.owed);
-      $('n-amex-note').textContent = n.amex.pending ? `incl. ${eur0.format(n.amex.pending)} pending` : 'not yet debited';
+      // Amex doesn't report pending purchases through open banking (checked 7 Nov 2026), so without
+      // any pending the figure lags new purchases by the 1–3 days they take to be booked.
+      $('n-amex-note').textContent = n.amex.pending ? `incl. ${eur0.format(n.amex.pending)} pending` : 'booked only (1–3 day delay)';
       $('n-free').textContent = money(n.freeToSpend);
       $('n-free').className = 'value ' + (n.freeToSpend < 0 ? 'up' : 'down');
     } else {
