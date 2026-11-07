@@ -228,16 +228,6 @@ function dailyRun() {
     return notify_('Revolut access expired', 'Tap to reconnect (takes a minute):\n' + connectUrl_());
   }
   syncTransactions();
-  // TEMPORARY (Nov 2026): run listBanks once, to check whether Enable Banking offers Amex.
-  // Runs only while the "Banks" tab doesn't exist; it can't break the sync. Remove afterwards.
-  if (!SpreadsheetApp.getActive().getSheetByName('Banks')) {
-    try { listBanks(); } catch (err) { console.log('listBanks failed: ' + err.message); }
-  }
-  // TEMPORARY (Nov 2026): save raw transactions once, to see which fields Revolut fills in
-  // (e.g. merchant_category_code). Runs only while the "RawSample" tab doesn't exist.
-  if (!SpreadsheetApp.getActive().getSheetByName('RawSample')) {
-    try { saveRawSample_(); } catch (err) { console.log('saveRawSample_ failed: ' + err.message); }
-  }
   if (REMIND_DAYS.includes(daysLeft)) {
     notify_(`Revolut access expires in ${daysLeft} day(s)`, 'Tap to renew:\n' + connectUrl_());
   }
