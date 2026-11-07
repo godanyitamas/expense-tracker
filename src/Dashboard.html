@@ -348,16 +348,23 @@
   function renderStatus() {
     const parts = [];
     if (D.syncedAt) parts.push('Synced ' + new Date(D.syncedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }));
-    if (D.validUntil) parts.push('Revolut access until ' + new Date(D.validUntil).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }));
+    // One entry per connected bank; older data only has the Revolut fields.
+    const conns = D.connections || (D.validUntil ? [{ bank: 'Revolut', validUntil: D.validUntil, renewUrl: D.renewUrl }] : []);
+    const dateLong = (d) => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    conns.forEach((c) => { if (c.validUntil) parts.push(`${c.bank} access until ${dateLong(c.validUntil)}`); });
     parts.push('Transfers and joint-account payments are left out; transfers into the joint account count as Shared household.');
     $('foot').textContent = parts.join(' · ');
-    const days = D.validUntil ? (new Date(D.validUntil) - new Date()) / 86400000 : null;
     const warn = $('warn');
-    if (days != null && days < 14 && D.renewUrl) {
-      warn.classList.remove('hidden'); warn.replaceChildren();
-      warn.append(days <= 0 ? 'Revolut access has expired, so syncing is paused. ' : `Revolut access expires in ${Math.ceil(days)} day(s). `);
-      const a = document.createElement('a'); a.href = D.renewUrl; a.textContent = 'Renew now'; warn.appendChild(a);
-    }
+    warn.replaceChildren();
+    conns.forEach((c) => {
+      const days = c.validUntil ? (new Date(c.validUntil) - new Date()) / 86400000 : null;
+      if (days == null || days >= 14 || !c.renewUrl) return;
+      const line = document.createElement('div');
+      line.append(days <= 0 ? `${c.bank} access has expired, so its syncing is paused. ` : `${c.bank} access expires in ${Math.ceil(days)} day(s). `);
+      const a = document.createElement('a'); a.href = c.renewUrl; a.textContent = `Renew ${c.bank}`; line.appendChild(a);
+      warn.appendChild(line);
+    });
+    warn.classList.toggle('hidden', !warn.childElementCount);
   }
  
   // anchor: the element the user just tapped in. Whatever re-rendering does to the content

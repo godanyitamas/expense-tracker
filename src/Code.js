@@ -33,6 +33,16 @@ const STARTER_RULES = [
 
 const props = () => PropertiesService.getScriptProperties();
 
+// Connected banks. Each has its own Enable Banking consent, stored in its own script property.
+// `connect` is the value of ?connect= that starts its consent flow (Revolut keeps the old "1").
+const BANKS = {
+  revolut: { name: 'Revolut', prop: 'SESSION', connect: '1', match: /revolut/i,
+    country: () => props().getProperty('EB_COUNTRY') || 'FR', label: a => accountLabel_(a) },
+  amex: { name: 'Amex', prop: 'SESSION_AMEX', connect: 'amex', match: /^american express$/i,
+    country: () => 'FR', label: a => 'Amex ' + accountLabel_(a) },
+};
+const BANK_IDS = Object.keys(BANKS);
+
 /* ---------------- Setup ---------------- */
 
 function setup() {
@@ -183,10 +193,10 @@ function listBanks(pattern) {
 
 // Writes the raw Enable Banking records of recent transactions to the "RawSample" tab, plus which
 // fields have a value in any of them and how many carry a merchant category code (MCC).
-function saveRawSample_(days, perAccount) {
+function saveRawSample_(days, perAccount, bank) {
   days = days || 14;
   perAccount = perAccount || 15;
-  const session = getSession_();
+  const session = getSession_(bank || 'revolut');
   if (!session) throw new Error('Not connected.');
   const counts = {}, rows = [];
   let total = 0, withMcc = 0;
@@ -219,23 +229,37 @@ function saveRawSample_(days, perAccount) {
 /* ---------------- Daily run ---------------- */
 
 function dailyRun() {
-  const session = getSession_();
-  if (!session) {
-    return notify_('Connect your Revolut', 'No bank connection yet. Open this link on your phone:\n' + connectUrl_());
+  if (!getSession_('revolut')) {
+    notify_('Connect your Revolut', 'No bank connection yet. Open this link on your phone:\n' + connectUrl_('revolut'));
   }
-  const daysLeft = Math.ceil((new Date(session.valid_until) - new Date()) / 86400000);
-  if (daysLeft <= 0) {
-    return notify_('Revolut access expired', 'Tap to reconnect (takes a minute):\n' + connectUrl_());
-  }
-  syncTransactions();
-  if (REMIND_DAYS.includes(daysLeft)) {
-    notify_(`Revolut access expires in ${daysLeft} day(s)`, 'Tap to renew:\n' + connectUrl_());
-  }
+  // Expiry emails per bank. An expired bank is skipped by the sync; the others still sync.
+  BANK_IDS.forEach(bank => {
+    const session = getSession_(bank);
+    if (!session) return;
+    const name = BANKS[bank].name, daysLeft = daysLeft_(session);
+    if (daysLeft <= 0) {
+      notify_(`${name} access expired`, `Tap to reconnect ${name} (takes a minute):\n` + connectUrl_(bank));
+    } else if (REMIND_DAYS.includes(daysLeft)) {
+      notify_(`${name} access expires in ${daysLeft} day(s)`, 'Tap to renew:\n' + connectUrl_(bank));
+    }
+  });
+  if (activeBanks_().length) syncTransactions();
+}
+
+function daysLeft_(session) {
+  return Math.ceil((new Date(session.valid_until) - new Date()) / 86400000);
+}
+
+// Banks with a consent that hasn't expired.
+function activeBanks_() {
+  return BANK_IDS.filter(bank => { const s = getSession_(bank); return s && daysLeft_(s) > 0; });
 }
 
 function syncTransactions() {
-  const session = getSession_();
-  if (!session) throw new Error('Not connected yet. Open the web app link to connect Revolut.');
+  const banks = activeBanks_();
+  if (!banks.length) throw new Error('No active bank connection. Open the web app link to connect Revolut.');
+  const accounts = [].concat(...banks.map(bank => getSession_(bank).accounts));
+  const errors = [];
 
   const sheet = SpreadsheetApp.getActive().getSheetByName(TX_SHEET);
   const last = sheet.getLastRow();
@@ -245,29 +269,33 @@ function syncTransactions() {
   const now = new Date();
   const newRows = [];
 
-  for (const acc of session.accounts) {
-    const latest = data
-      .filter(r => String(r[0]).startsWith(acc.uid + ':') && r[COL.date - 1] instanceof Date)
-      .reduce((max, r) => (!max || r[COL.date - 1] > max ? r[COL.date - 1] : max), null);
+  for (const acc of accounts) {
+    try {
+      const latest = data
+        .filter(r => String(r[0]).startsWith(acc.uid + ':') && r[COL.date - 1] instanceof Date)
+        .reduce((max, r) => (!max || r[COL.date - 1] > max ? r[COL.date - 1] : max), null);
 
-    let txs;
-    if (latest) {
-      txs = fetchTransactions_(acc.uid, addDays_(latest, -OVERLAP_DAYS));
-    } else {
-      try {
-        txs = fetchTransactions_(acc.uid, addDays_(now, -FIRST_SYNC_DAYS));
-      } catch (err) {
-        console.log('Long history refused, retrying with 89 days: ' + err.message);
-        txs = fetchTransactions_(acc.uid, addDays_(now, -89));
+      let txs;
+      if (latest) {
+        txs = fetchTransactions_(acc.uid, addDays_(latest, -OVERLAP_DAYS));
+      } else {
+        try {
+          txs = fetchTransactions_(acc.uid, addDays_(now, -FIRST_SYNC_DAYS));
+        } catch (err) {
+          console.log('Long history refused, retrying with 89 days: ' + err.message);
+          txs = fetchTransactions_(acc.uid, addDays_(now, -89));
+        }
       }
-    }
 
-    for (const t of txs) {
-      if (t.status && t.status !== 'BOOK') continue; // skip pending, they come back once booked
-      const row = toRow_(acc, t, now, rules);
-      if (seen.has(row[0])) continue;
-      seen.add(row[0]);
-      newRows.push(row);
+      for (const t of txs) {
+        if (t.status && t.status !== 'BOOK') continue; // skip pending, they come back once booked
+        const row = toRow_(acc, t, now, rules);
+        if (seen.has(row[0])) continue;
+        seen.add(row[0]);
+        newRows.push(row);
+      }
+    } catch (err) {
+      errors.push(`${acc.label}: ${err.message}`); // other accounts still sync
     }
   }
 
@@ -278,6 +306,8 @@ function syncTransactions() {
   applyRules_();
   props().setProperty('LAST_SYNC', now.toISOString());
   console.log(`Added ${newRows.length} transactions`);
+  // Rows from the accounts that worked are saved above; report the failures afterwards.
+  if (errors.length) throw new Error(`Added ${newRows.length} transactions, but sync failed for ` + errors.join('; '));
   return newRows.length;
 }
 
@@ -394,23 +424,26 @@ function doGet(e) {
   try {
     if (p.error) return page_('Authorization failed', esc_(p.error_description || p.error));
     if (p.code) {
-      const session = finishAuth_(p.code, p.state);
+      const { session, bank } = finishAuth_(p.code, p.state);
       let result;
       try {
         result = `Imported ${syncTransactions()} new transactions.`;
       } catch (err) {
         result = 'Connected, but the first sync failed: ' + esc_(err.message);
       }
-      return page_('Revolut connected',
+      return page_(`${BANKS[bank].name} connected`,
         `${session.accounts.length} account(s), access valid until ` +
         `${esc_(fmtDate_(new Date(session.valid_until)))}.<br><br>${result}`);
     }
     if (!p.connect) return dashboardPage_();
-    const url = startAuth_();
-    return page_('Connect Revolut',
+    const bank = BANK_IDS.find(b => BANKS[b].connect === p.connect);
+    if (!bank) return page_('Unknown bank', `No bank called "${esc_(p.connect)}".`);
+    const name = BANKS[bank].name;
+    const url = startAuth_(bank);
+    return page_(`Connect ${name}`,
       `<a href="${esc_(url)}" target="_top" style="display:inline-block;padding:14px 22px;background:#191c1f;` +
-      `color:#fff;border-radius:10px;text-decoration:none;font-size:18px">Connect Revolut</a>` +
-      `<p style="color:#666">You'll approve read-only access in the Revolut app, then come back here.</p>`);
+      `color:#fff;border-radius:10px;text-decoration:none;font-size:18px">Connect ${name}</a>` +
+      `<p style="color:#666">You'll approve read-only access with ${name}, then come back here.</p>`);
   } catch (err) {
     return page_('Something went wrong', esc_(err.message));
   }
@@ -418,8 +451,8 @@ function doGet(e) {
 
 /* ---------------- Home-screen dashboard (web app) ---------------- */
 
-function connectUrl_() {
-  return redirectUrl_() + '?connect=1';
+function connectUrl_(bank) {
+  return redirectUrl_() + '?connect=' + BANKS[bank || 'revolut'].connect;
 }
 
 function dashboardPage_() {
@@ -460,27 +493,35 @@ function getDashboardData_() {
       .map(r => ({ month: ym(r[0]), amount: num(r[1]), estimate: /estimate/i.test(String(r[2])) }))
     : [];
 
-  const session = getSession_();
+  const session = getSession_('revolut');
   let renewUrl = '';
-  try { renewUrl = connectUrl_(); } catch (e) { /* REDIRECT_URL not set */ }
+  try { renewUrl = connectUrl_('revolut'); } catch (e) { /* REDIRECT_URL not set */ }
+  // One entry per connected bank, for the footer and the expiry warning.
+  const connections = BANK_IDS.filter(bank => getSession_(bank)).map(bank => {
+    let url = '';
+    try { url = connectUrl_(bank); } catch (e) { /* REDIRECT_URL not set */ }
+    return { bank: BANKS[bank].name, validUntil: getSession_(bank).valid_until || '', renewUrl: url };
+  });
   return {
     months, cats, tx, salary,
     syncedAt: props().getProperty('LAST_SYNC') || '',
     validUntil: (session && session.valid_until) || '',
     renewUrl,
+    connections,
   };
 }
 
-function startAuth_() {
-  const country = props().getProperty('EB_COUNTRY') || 'FR';
+function startAuth_(bank) {
+  bank = bank || 'revolut';
+  const cfg = BANKS[bank], country = cfg.country();
   const aspsp = (eb_('get', '/aspsps', null, { country }).aspsps || [])
-    .find(a => /revolut/i.test(a.name) && (!a.psu_types || a.psu_types.includes('personal')));
-  if (!aspsp) throw new Error(`Revolut not found for ${country}. Run listRevolut() and set EB_COUNTRY.`);
+    .find(a => cfg.match.test(a.name) && (!a.psu_types || a.psu_types.includes('personal')));
+  if (!aspsp) throw new Error(`${cfg.name} not found for ${country}. Run listBanks() to check.`);
 
   const seconds = aspsp.maximum_consent_validity || 90 * 86400;
   const validUntil = new Date(Date.now() + (seconds - 600) * 1000).toISOString();
   const state = Utilities.getUuid();
-  props().setProperties({ AUTH_STATE: state, AUTH_VALID_UNTIL: validUntil });
+  props().setProperties({ AUTH_STATE: state, AUTH_BANK: bank, AUTH_VALID_UNTIL: validUntil });
 
   return eb_('post', '/auth', {
     access: { valid_until: validUntil },
@@ -494,17 +535,20 @@ function startAuth_() {
 function finishAuth_(code, state) {
   const expected = props().getProperty('AUTH_STATE');
   if (!expected || state !== expected) throw new Error('This link is stale. Open the web app again and restart.');
+  const bank = props().getProperty('AUTH_BANK') || 'revolut';
+  const cfg = BANKS[bank];
   const s = eb_('post', '/sessions', { code });
   const session = {
     session_id: s.session_id,
     accounts: (s.accounts || []).map(a => (typeof a === 'string'
-      ? { uid: a, label: a.slice(0, 8) }
-      : { uid: a.uid, label: accountLabel_(a) })),
+      ? { uid: a, label: `${cfg.name} ${a.slice(0, 8)}` }
+      : { uid: a.uid, label: cfg.label(a) })),
     valid_until: (s.access && s.access.valid_until) || props().getProperty('AUTH_VALID_UNTIL'),
   };
-  props().setProperty('SESSION', JSON.stringify(session));
+  props().setProperty(cfg.prop, JSON.stringify(session));
   props().deleteProperty('AUTH_STATE');
-  return session;
+  props().deleteProperty('AUTH_BANK');
+  return { session, bank };
 }
 
 function accountLabel_(a) {
@@ -512,8 +556,8 @@ function accountLabel_(a) {
   return [a.currency, a.name, iban ? '…' + iban.slice(-4) : ''].filter(Boolean).join(' ') || a.uid.slice(0, 8);
 }
 
-function getSession_() {
-  const raw = props().getProperty('SESSION');
+function getSession_(bank) {
+  const raw = props().getProperty(BANKS[bank || 'revolut'].prop);
   return raw ? JSON.parse(raw) : null;
 }
 

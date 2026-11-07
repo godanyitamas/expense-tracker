@@ -1,11 +1,12 @@
 # Revolut expense tracker — project context
 
-Last updated: 2 Nov 2026. Update this file whenever something structural changes.
+Last updated: 7 Nov 2026. Update this file whenever something structural changes.
 
 ## Goal and principles
 Automatic, phone-first tracker of Revolut spending. Free, simple, "design once and leave it". The Google Sheet is the single source of truth; dashboards only display it. Later: add an IBKR investments view (official IBKR connector exists in Claude).
 
 ## Architecture
+0. **Banks:** Revolut (since 1 Nov 2026) and, prepared but not yet connected, American Express France (Enable Banking lists "American Express", FR, personal and business, 180-day consent, not beta; card received 6 Nov 2026). Each bank has its own consent in its own script property (`SESSION` = Revolut, `SESSION_AMEX` = Amex; see `BANKS` in Code.gs).
 1. **Revolut → Enable Banking** (PSD2 aggregator, free "restricted production" mode for own accounts). App name "Expense tracker", Revolut listed under FR, consent max 180 days. Current consent given 1 Nov 2026, so it expires around end of April 2027.
 2. **Google Apps Script** bound to the sheet. Daily time trigger runs `dailyRun` at about 6–7 am: syncs booked transactions (pending ones skipped), applies rules, emails renewal reminders 7/3/1 days before consent expiry.
 3. **Google Sheet** "Revolut expenses": ID `1s-tz6vRSG-ff2VsANsgPcEq8bDonAoK7KTt3clU2Ve0`.
@@ -14,11 +15,12 @@ Automatic, phone-first tracker of Revolut spending. Free, simple, "design once a
    - Backup: Claude-hosted dashboard artifact "My spending" (https://claude.ai/artifact/AHZTa8mGcPACrAg2gYYg3L), reads the sheet via the Google Sheets connector.
    - In-sheet: "Overview" tab (styled cards and charts).
 
-Script properties: `EB_APP_ID`, `EB_PRIVATE_KEY`, `REDIRECT_URL` (the `/exec` URL, also registered in Enable Banking), optional `EB_COUNTRY`; the script also stores `SESSION`, `LAST_SYNC`, `AUTH_*`.
+Script properties: `EB_APP_ID`, `EB_PRIVATE_KEY`, `REDIRECT_URL` (the `/exec` URL, also registered in Enable Banking), optional `EB_COUNTRY`; the script also stores `SESSION` (Revolut), `SESSION_AMEX`, `LAST_SYNC`, `AUTH_*`.
 
 ## Web app routes (`doGet`)
 - `/exec` → dashboard
 - `/exec?connect=1` → "Connect Revolut" (consent renewal; emails link here)
+- `/exec?connect=amex` → "Connect Amex" (same flow; `AUTH_BANK` remembers which bank the callback is for)
 - `/exec?code=…&state=…` → Enable Banking callback, then an immediate sync
 
 ## Sheet tabs
@@ -41,7 +43,7 @@ Script properties: `EB_APP_ID`, `EB_PRIVATE_KEY`, `REDIRECT_URL` (the `/exec` UR
 - Remaining small Uncategorized items: deliberately left as is.
 
 ## Code.gs key functions
-`setup`, `dailyRun`, `syncTransactions`, `applyRules_(force)`, `recategorizeAll`, `onEdit` (fixing an "Uncategorized" row by hand creates a rule for that merchant), `doGet`, `dashboardPage_`, `getDashboardData_`, `startAuth_`, `finishAuth_`, `eb_`, `jwt_`, `normalizePem_`, `norm_`, `categorize_`, `listRevolut`, `testConnection`.
+`setup`, `dailyRun`, `activeBanks_`, `syncTransactions`, `applyRules_(force)`, `recategorizeAll`, `onEdit` (fixing an "Uncategorized" row by hand creates a rule for that merchant), `doGet`, `dashboardPage_`, `getDashboardData_`, `startAuth_`, `finishAuth_`, `eb_`, `jwt_`, `normalizePem_`, `norm_`, `categorize_`, `listRevolut`, `testConnection`.
 
 ## Gotchas
 - **Never re-run `setup`:** it rebuilds Details/Budgets from the old template and would undo the hand-edited formulas. (Exception: re-creating a missing trigger, and then fix formulas after.)
@@ -52,6 +54,9 @@ Script properties: `EB_APP_ID`, `EB_PRIVATE_KEY`, `REDIRECT_URL` (the `/exec` UR
 - Sheets QUERY has no unary minus: use `0-sum(C)`, not `-sum(C)`. Spreadsheet locale is en_GB.
 - The rule "distri" (Groceries) also catches "Distribusion Aerobus"; known, minor.
 - Some money received back is categorized "Income"; this matters only if an income/savings view is added.
+- **Daily run with several banks:** each bank's expiry email (7/3/1 days, and daily once expired) uses that bank's link; an expired bank is skipped and the others still sync. If one account fails mid-consent, the other accounts' rows are saved first, then the run fails with the error (Google emails the failure).
+- **Amex bill (to do after the first statement):** if it is paid from Revolut, add rules so the Revolut payment to Amex and the "payment received" on the Amex side are both "Transfers" (otherwise spending is double counted and the Amex credit becomes "Income"). Check the exact labels first; a broad "american express" rule would also catch the annual fee.
+- **Revolut data (checked 7 Nov 2026, RawSample tab):** no merchant category codes (MCC always empty). Available: transaction type (CARD_PAYMENT/TRANSFER/TOPUP/REV_PAYMENT), card last 4 (6975 = Tamás on personal; on the joint account 2969 = Tamás, 5023 = Katia), payer name, exchange rate for HUF payments, IBANs on transfers, pending status. Helpers: `listBanks(pattern)`, `saveRawSample_(days, perAccount, bank)`.
 
 ## Status
 Done: bank connection, daily sync, rules and categories, Overview tab, Claude dashboard, home-screen web-app dashboard (pending user's deploy and confirmation that it works).

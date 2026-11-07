@@ -41,6 +41,11 @@ const data = {
   syncedAt: now.toISOString(),
   validUntil: new Date(now.getTime() + 150 * 86400000).toISOString(),
   renewUrl: '',
+  // Amex expiring soon, so the preview shows the expiry warning too.
+  connections: [
+    { bank: 'Revolut', validUntil: new Date(now.getTime() + 150 * 86400000).toISOString(), renewUrl: '#renew-revolut' },
+    { bank: 'Amex', validUntil: new Date(now.getTime() + 5 * 86400000).toISOString(), renewUrl: '#renew-amex' },
+  ],
 };
 const html = fs.readFileSync(src, 'utf8');
 if (!html.includes('<?!= dataJson ?>')) throw new Error('Scriptlet <?!= dataJson ?> not found in Dashboard.html');

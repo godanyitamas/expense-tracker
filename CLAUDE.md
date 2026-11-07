@@ -9,6 +9,7 @@ Full project context (architecture, sheet layout, spending rules, gotchas): **re
 - `scripts/clasp-auth.sh` – writes `~/.clasprc.json` from the `CLASPRC_B64` (base64) or `CLASPRC_JSON` env var.
 - `docs/CONTEXT.md` – project context.
 - `tools/preview/` – local dashboard preview: mock data, layout-stability checks, screenshots (see its README).
+- `tools/test/code.test.js` – server-side tests for `Code.js` (daily run, multi-bank sync, connect flow) with fake Google services and a fake Enable Banking. Run `node tools/test/code.test.js` before pushing changes to `Code.js`, and extend it when you change that logic.
 
 ## Session start
 1. Run `scripts/clasp-auth.sh`. If neither variable is set, tell the user and continue with offline work only.
