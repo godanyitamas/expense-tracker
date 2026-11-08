@@ -7,7 +7,7 @@ const { chromium } = require('playwright');
 const path = require('path');
 
 const file = 'file://' + path.resolve(process.argv[2] || '/tmp/dashboard-preview.html');
-const BLOCKS = ['#now', '#take', '#k1', '#k1-note', '#k2', '#k3', '#k3-note', '#k4', '#k4-note', '#bars-card', '#cats-card', '#heat-card', '#detail'];
+const BLOCKS = ['#now', '#take', '#k1', '#k1-note', '#k3', '#k3-note', '#bars-card', '#cats-card', '#heat-card', '#detail'];
 const TAP_TOLERANCE = 3; // px; the smooth reveal scroll can start within the same frame
 let failures = 0;
 const fail = (msg) => { failures++; console.log('  FAIL ' + msg); };

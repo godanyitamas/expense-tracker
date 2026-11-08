@@ -68,9 +68,7 @@
   .nowgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .nowcell .label { font-size: 12px; color: var(--muted); }
   .nowcell .value { font: 400 24px/1.2 ui-serif, Georgia, serif; margin-top: 4px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-  .nowcell .note { font-size: 12px; color: var(--muted); margin-top: 2px; }
   .nowcell.main .value { font-weight: 600; }
-  .now .foot2 { font-size: 12px; color: var(--muted); margin: 10px 0 0; }
 </style>
 </head>
 <body>
@@ -83,19 +81,16 @@
   <section class="card now hidden" id="now">
     <h2>Right now</h2>
     <div class="nowgrid" id="now-grid">
-      <div class="nowcell"><div class="label">On Revolut</div><div class="value" id="n-rev"></div><div class="note" id="n-rev-note"></div></div>
-      <div class="nowcell" id="n-amex-cell"><div class="label">Amex to pay</div><div class="value" id="n-amex"></div><div class="note" id="n-amex-note">not yet debited</div></div>
-      <div class="nowcell main" id="n-free-cell"><div class="label">Free to spend</div><div class="value" id="n-free"></div><div class="note">Revolut minus Amex</div></div>
+      <div class="nowcell"><div class="label">On Revolut</div><div class="value" id="n-rev"></div></div>
+      <div class="nowcell" id="n-amex-cell"><div class="label">Amex to pay</div><div class="value" id="n-amex"></div></div>
+      <div class="nowcell main" id="n-free-cell"><div class="label">Free to spend</div><div class="value" id="n-free"></div></div>
     </div>
-    <p class="foot2" id="n-foot"></p>
   </section>
   <nav class="chips" id="chips" aria-label="Month"></nav>
  
   <section class="kpis">
     <div class="kpi"><div class="label" id="k1-label">Spent</div><div class="value" id="k1"></div><div class="note" id="k1-note"></div></div>
-    <div class="kpi"><div class="label">Usual month</div><div class="value" id="k2"></div><div class="note">Average of the 6 months before</div></div>
     <div class="kpi"><div class="label">Biggest category</div><div class="value text" id="k3"></div><div class="note" id="k3-note"></div></div>
-    <div class="kpi"><div class="label" id="k4-label">Left from salary</div><div class="value" id="k4"></div><div class="note" id="k4-note"></div></div>
   </section>
  
   <div class="grid2">
@@ -244,19 +239,9 @@
       const d = document.createElement('span'); d.className = tot > avg ? 'up' : 'down'; d.textContent = signed(tot / avg - 1);
       note.append(d, ' vs 6-month average');
     } else note.textContent = 'No earlier months to compare';
-    $('k2').textContent = avg ? eur0.format(avg) : '—';
     const top = catsFor(m)[0];
     $('k3').textContent = top ? top.category : '—';
     $('k3-note').textContent = top ? eur0.format(top.amount) + (top.share != null ? ' · ' + pct(top.share) + ' of the month' : '') : '';
-    $('k4-label').textContent = 'Left from salary' + sofar;
-    $('k4').textContent = sal ? (left < 0 ? '−' : '') + eur0.format(Math.abs(left)) : '—';
-    $('k4').className = 'value' + (sal && left < 0 ? ' up' : '');
-    const n4 = $('k4-note'); n4.replaceChildren();
-    if (sal) {
-      n4.append(left >= 0 ? pct(left / sal.amount) + ' saved of ' + eur0.format(sal.amount)
-        : 'over your ' + eur0.format(sal.amount) + ' salary');
-      if (sal.estimate) n4.append(' (estimated)');
-    } else n4.textContent = 'No salary recorded for this month';
     $('cats-title').textContent = 'By category · ' + mLong(m);
   }
  
@@ -366,29 +351,18 @@
   function renderNow() {
     const n = D.now;
     if (!n || !n.revolut) return;
-    const kind = { ITAV: 'available', CLAV: 'available', XPCD: 'expected', ITBD: 'booked', CLBD: 'booked' };
     const money = (v) => (v < 0 ? '−' : '') + eur0.format(Math.abs(v));
     $('n-rev').textContent = money(n.revolut.amount);
-    const at = n.revolut.at ? new Date(n.revolut.at) : null;
-    $('n-rev-note').textContent = (kind[n.revolut.type] || 'balance') +
-      (at && !isNaN(at) ? ' · ' + at.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
     const hasAmex = !!n.amex;
     $('n-amex-cell').classList.toggle('hidden', !hasAmex);
     $('n-free-cell').classList.toggle('hidden', !hasAmex);
     if (hasAmex) {
       $('n-amex').textContent = money(n.amex.owed);
-      // Amex doesn't report pending purchases through open banking (checked 7 Nov 2026), so without
-      // any pending the figure lags new purchases by the 1–3 days they take to be booked.
-      $('n-amex-note').textContent = n.amex.pending ? `incl. ${eur0.format(n.amex.pending)} pending` : 'booked only (1–3 day delay)';
       $('n-free').textContent = money(n.freeToSpend);
       $('n-free').className = 'value ' + (n.freeToSpend < 0 ? 'up' : 'down');
     } else {
       $('now-grid').style.gridTemplateColumns = '1fr';
     }
-    const foot = [];
-    if (n.joint) foot.push('Joint account: ' + money(n.joint.amount));
-    foot.push('Savings vaults are not included.');
-    $('n-foot').textContent = foot.join(' · ');
     $('now').classList.remove('hidden');
   }
  
@@ -424,7 +398,7 @@
     const key = document.documentElement.clientWidth + '|' + state.cat;
     if (key === lockedFor) return;
     lockedFor = key;
-    const els = ['take', 'k1-label', 'k1-note', 'k3', 'k3-note', 'k4-label', 'k4-note', 'cats'].map($);
+    const els = ['take', 'k1-label', 'k1-note', 'k3', 'k3-note', 'cats'].map($);
     if (state.cat) els.push($('tx-box'));
     els.forEach((e) => { e.style.minHeight = ''; });
     const max = els.map(() => 0), keep = state.month;
