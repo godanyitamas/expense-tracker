@@ -12,6 +12,7 @@ function fakeSheet(name, grid = []) {
     getLastRow: () => grid.length,
     clear: () => { grid.length = 0; },
     getRange: (r0, c0, nr = 1, nc = 1) => ({
+      getValue: () => (grid[r0 - 1] || [])[c0 - 1] ?? '',
       getValues: () => grid.slice(r0 - 1, r0 - 1 + nr).map((r) => Array.from({ length: nc }, (_, j) => (r[c0 - 1 + j] ?? ''))),
       setValues: (v) => { v.forEach((row, i) => { grid[r0 - 1 + i] = grid[r0 - 1 + i] || []; row.forEach((x, j) => { grid[r0 - 1 + i][c0 - 1 + j] = x; }); }); },
       sort: () => {},
@@ -20,8 +21,8 @@ function fakeSheet(name, grid = []) {
   return sh;
 }
 
-function setup({ sessions = {}, failUids = [], failBalances = [], balances = {}, pending = {} } = {}) {
-  const store = {}, mails = [], eb = [];
+function setup({ sessions = {}, failUids = [], failBalances = [], balances = {}, pending = {}, claude = null } = {}) {
+  const store = {}, mails = [], eb = [], claudeCalls = [];
   const P = { getProperty: (k) => (k in store ? store[k] : null), setProperty: (k, v) => { store[k] = String(v); },
     setProperties: (o) => Object.assign(store, o), deleteProperty: (k) => { delete store[k]; } };
   P.setProperty('REDIRECT_URL', 'https://script.google.com/macros/s/X/exec');
@@ -40,6 +41,12 @@ function setup({ sessions = {}, failUids = [], failBalances = [], balances = {},
     MailApp: { sendEmail: (...a) => mails.push(a) }, GmailApp: { sendEmail: (...a) => mails.push(a) },
     Session: { getScriptTimeZone: () => 'Europe/Paris', getEffectiveUser: () => ({ getEmail: () => 'me@example.com' }), getActiveUser: () => ({ getEmail: () => 'me@example.com' }) },
     Utilities: { getUuid: () => 'uuid-1', formatDate: (d) => d.toISOString().slice(0, 10), base64EncodeWebSafe: (x) => 'h', computeDigest: () => [], DigestAlgorithm: {} },
+    UrlFetchApp: { fetch: (url, opt) => {
+      if (!claude) throw new Error('unexpected fetch ' + url);
+      const req = JSON.parse(opt.payload); claudeCalls.push({ url, headers: opt.headers, req });
+      const [code, body] = claude(req);
+      return { getResponseCode: () => code, getContentText: () => (typeof body === 'string' ? body : JSON.stringify(body)) };
+    } },
     HtmlService: { createHtmlOutput: (h) => ({ html: h, setTitle() { return this; }, addMetaTag() { return this; }, setXFrameOptionsMode() { return this; } }), XFrameOptionsMode: {} },
   };
   vm.createContext(ctx);
@@ -68,7 +75,7 @@ function setup({ sessions = {}, failUids = [], failBalances = [], balances = {},
       creditor: { name: 'Pending shop' }, remittance_information: [] })).concat([{ transaction_id: uid + '-t1', booking_date: '2026-11-06', status: 'BOOK', credit_debit_indicator: 'DBIT',
       transaction_amount: { amount: '10.00', currency: 'EUR' }, creditor: { name: 'Shop ' + uid }, remittance_information: [] }]);
   };
-  return { ctx, store, mails, rows, eb, sheets };
+  return { ctx, store, mails, rows, eb, sheets, claudeCalls };
 }
 const future = '2027-04-30T00:00:00Z', past = '2026-11-01T00:00:00Z';
 const rev = { session_id: 'R', accounts: [{ uid: 'rev-1', label: 'EUR Tamás Godányi …8462' }], valid_until: future };
@@ -189,4 +196,83 @@ t.ctx.fetchTransactions_ = (uid) => [{ transaction_id: uid + '-t1', booking_date
 t.ctx.syncTransactions();
 assert.strictEqual(t.sheets.Pending.grid.length, 1);
 console.log('   ok next sync without pending: Pending tab emptied');
+
+// 13-16. Claude categorizing. Fake Claude API: answers per merchant from a table.
+const recent = new Date(Date.now() - 3 * 86400000), old = new Date(Date.now() - 200 * 86400000);
+const TX = (k, d, amt, m, desc, cat) => [k, d, amt, 'EUR', m, desc, cat, 'EUR Tamás Godányi …8462', d];
+function claudeSetup(answers, opts = {}) {
+  const t = setup({ ...opts, claude: (req) => {
+    const items = JSON.parse(req.messages[0].content.split('Merchants to categorize (JSON):\n')[1]);
+    if (opts.fail) return [529, { type: 'error', error: { type: 'overloaded_error' } }];
+    const results = items.map((i) => ({ id: i.id, ...(answers[i.merchant] || { category: 'Uncategorized', match: '' }) }));
+    return [200, { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ results }) }] }];
+  } });
+  t.sheets.Rules.grid.push(['ab bifenzi', 'Groceries'], ['zara', 'Shopping'], ['salaire', 'Salary']);
+  t.sheets.Transactions.grid.push(
+    TX('k1', recent, -437.9, 'DF64 COFFEE GRINDER', 'SP DF64 COFFEE GRINDER  SINGAPORE', 'Uncategorized'),
+    TX('k2', recent, -54.34, 'Telekomszaml*023133445', 'Telekomszaml*023133445', 'Uncategorized'),
+    TX('k3', recent, -60.04, 'Telekomszaml*023133445', 'Telekomszaml*023133445', 'Uncategorized'), // same merchant: asked once
+    TX('k4', recent, -20, 'Sajeer Mohamed', 'To Sajeer M', 'Uncategorized'),                        // a person: stays
+    TX('k5', recent, 15, 'Someone', 'Refund', 'Uncategorized'),                                       // credit: never sent (rules make it Income)
+    TX('k6', old, -7.6, 'Aux Delices Du Chate', 'Aux Delices Du Chat', 'Uncategorized'),             // older than 30 days
+    TX('k7', recent, -9.61, 'Ab.bifenzi', 'Ab.bifenzi', 'Groceries'));
+  return t;
+}
+const ANSWERS = { 'DF64 COFFEE GRINDER': { category: 'Shopping', match: 'df64' },
+  'Telekomszaml*023133445': { category: 'Groceries', match: 'telekomszaml' },
+  'Aux Delices Du Chate': { category: 'Groceries', match: 'aux delices du chat' } };
+const cat = (t, k) => t.rows.find((r) => r[0] === k)[6];
+
+// 13. No API key: nothing is sent, the sync works as before.
+t = claudeSetup(ANSWERS, { sessions: { SESSION: rev } });
+t.ctx.dailyRun();
+assert.strictEqual(t.claudeCalls.length, 0); assert.strictEqual(cat(t, 'k1'), 'Uncategorized');
+console.log('13 ok no ANTHROPIC_API_KEY: Claude not called');
+
+// 14. With a key: the daily sync sends recent Uncategorized debits once per merchant, saves the
+//     answers as rules marked "claude", and leaves people / unknowns Uncategorized (remembered).
+t = claudeSetup(ANSWERS, { sessions: { SESSION: rev } });
+t.store.ANTHROPIC_API_KEY = 'sk-test';
+t.ctx.dailyRun();
+assert.strictEqual(t.claudeCalls.length, 1);
+const call = t.claudeCalls[0];
+assert.strictEqual(call.url, 'https://api.anthropic.com/v1/messages'); assert.strictEqual(call.headers['x-api-key'], 'sk-test');
+assert.strictEqual(call.req.model, 'claude-opus-5-5'); assert.strictEqual(call.req.output_config.format.type, 'json_schema');
+const sent = JSON.parse(call.req.messages[0].content.split('Merchants to categorize (JSON):\n')[1]).map((i) => i.merchant);
+assert.deepStrictEqual(sent.sort(), ['DF64 COFFEE GRINDER', 'Sajeer Mohamed', 'Shop rev-1', 'Telekomszaml*023133445']);
+const enumCats = call.req.output_config.format.schema.properties.results.items.properties.category.enum;
+assert.ok(enumCats.includes('Shopping') && enumCats.includes('Uncategorized') && !enumCats.includes('Salary'));
+assert.strictEqual(cat(t, 'k1'), 'Shopping'); assert.strictEqual(cat(t, 'k2'), 'Groceries'); assert.strictEqual(cat(t, 'k3'), 'Groceries');
+assert.strictEqual(cat(t, 'k4'), 'Uncategorized'); assert.strictEqual(cat(t, 'k5'), 'Income'); assert.strictEqual(cat(t, 'k6'), 'Uncategorized');
+const added = t.sheets.Rules.grid.filter((r) => /^claude/.test(r[2] || ''));
+assert.deepStrictEqual(added.map((r) => [r[0], r[1]]), [['df64', 'Shopping'], ['telekomszaml', 'Groceries']]);
+assert.strictEqual(t.sheets.Rules.grid[0][2], 'Added by');
+assert.deepStrictEqual(JSON.parse(t.store.CLAUDE_SKIPPED).sort(), ['sajeer mohamed', 'shop rev 1']);
+// Next sync: nothing new to ask (people and unknowns are remembered).
+t.ctx.syncTransactions();
+assert.strictEqual(t.claudeCalls.length, 1);
+console.log('14 ok daily: 4 merchants asked once, rules added:', added.map((r) => r[0] + '→' + r[1]).join(', '), '| skipped remembered');
+
+// 15. Fixing a Claude-categorized row by hand updates the rule and the other rows it categorized.
+const tx = t.sheets.Transactions, rowOf = (k) => tx.grid.findIndex((r) => r[0] === k) + 1;
+tx.grid[rowOf('k2') - 1][6] = 'Phone & internet';
+t.ctx.onEdit({ range: { getSheet: () => tx, getColumn: () => 7, getNumRows: () => 1, getRow: () => rowOf('k2') }, value: 'Phone & internet', oldValue: 'Groceries' });
+const fixedRule = t.sheets.Rules.grid.find((r) => r[0] === 'telekomszaml');
+assert.strictEqual(fixedRule[1], 'Phone & internet'); assert.match(fixedRule[2], /fixed by hand/);
+assert.strictEqual(cat(t, 'k3'), 'Phone & internet'); assert.strictEqual(cat(t, 'k7'), 'Groceries');
+// A manual change on a row categorized by a normal rule stays a one-off.
+tx.grid[rowOf('k7') - 1][6] = 'Eating out';
+t.ctx.onEdit({ range: { getSheet: () => tx, getColumn: () => 7, getNumRows: () => 1, getRow: () => rowOf('k7') }, value: 'Eating out', oldValue: 'Groceries' });
+assert.deepStrictEqual(t.sheets.Rules.grid.find((r) => r[0] === 'ab bifenzi'), ['ab bifenzi', 'Groceries']);
+console.log('15 ok hand fix of a Claude rule: rule now', fixedRule[1], '; normal rules untouched');
+
+// 16. "Categorize all" also takes old rows; an API failure doesn't break the daily sync.
+t.ctx.categorizeWithClaude();
+assert.strictEqual(cat(t, 'k6'), 'Groceries');
+t = claudeSetup(ANSWERS, { sessions: { SESSION: rev }, fail: true });
+t.store.ANTHROPIC_API_KEY = 'sk-test';
+t.ctx.dailyRun();
+assert.strictEqual(t.claudeCalls.length, 1); assert.strictEqual(cat(t, 'k1'), 'Uncategorized');
+assert.ok(t.rows.some((r) => r[0] === 'rev-1:rev-1-t1'));
+console.log('16 ok backlog run categorizes old rows; Claude API error: sync still completes');
 console.log('ALL SERVER TESTS PASSED');

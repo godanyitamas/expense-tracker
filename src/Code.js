@@ -6,6 +6,7 @@
  *   EB_PRIVATE_KEY  full contents of the .pem file
  *   REDIRECT_URL    your web app URL (added after the first deployment)
  *   EB_COUNTRY      optional, defaults to FR
+ *   ANTHROPIC_API_KEY  optional: lets Claude categorize merchants no rule matches
  */
 
 const EB_API = 'https://api.enablebanking.com';
@@ -312,6 +313,7 @@ function syncTransactions() {
     sheet.getRange(2, 1, sheet.getLastRow() - 1, TX_HEADERS.length).sort({ column: COL.date, ascending: false });
   }
   applyRules_();
+  try { claudeCategorize_(CLAUDE_RECENT_DAYS); } catch (err) { console.log('Claude categorizing skipped: ' + err.message); }
   try { saveBalances_(accounts, now); } catch (err) { console.log('Balances not saved: ' + err.message); }
   try { savePending_(pendingRows); } catch (err) { console.log('Pending not saved: ' + err.message); }
   props().setProperty('LAST_SYNC', now.toISOString());
@@ -518,7 +520,8 @@ function onEdit(e) {
 
   const cat = String(e.value || '').trim();
   const old = String(e.oldValue || '').trim();
-  if (!cat || cat === UNCATEGORIZED || (old && old !== UNCATEGORIZED)) return; // one-off overrides stay one-off
+  if (!cat || cat === UNCATEGORIZED) return;
+  if (old && old !== UNCATEGORIZED) return fixClaudeRule_(sh, e.range.getRow(), old, cat); // other overrides stay one-off
   const merchant = String(sh.getRange(e.range.getRow(), COL.merchant).getValue()).trim();
   if (!merchant) return;
   SpreadsheetApp.getActive().getSheetByName(RULES_SHEET).appendRow([merchant.toLowerCase(), cat]);
@@ -529,7 +532,155 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('Expense tracker')
     .addItem('Sync now', 'syncTransactions')
     .addItem('Re-apply rules', 'applyRules_')
+    .addItem('Categorize all Uncategorized with Claude', 'categorizeWithClaude')
     .addToUi();
+}
+
+/* ---------------- Claude categorizing ---------------- */
+
+// Debits that no rule matched go to Claude, once per merchant. Each answer is saved as a rule
+// (Rules column C = "claude <date>"), so the merchant is categorized by rules from then on and is
+// never sent again. Correcting such a row's category by hand updates that rule (see onEdit).
+// Merchants Claude can't place (e.g. payments to private people) stay Uncategorized and are
+// remembered in CLAUDE_SKIPPED so they aren't asked about every day.
+const CLAUDE_MODEL = 'claude-opus-5-5';
+const CLAUDE_RECENT_DAYS = 30;   // the daily sync only looks at rows this recent
+const CLAUDE_MAX_MERCHANTS = 80; // per request
+const CLAUDE_NOT_OFFERED = ['Salary', 'Income', 'Transfers', UNCATEGORIZED];
+
+// Menu / editor: every Uncategorized debit, however old.
+function categorizeWithClaude() {
+  const n = claudeCategorize_(null);
+  try { SpreadsheetApp.getActive().toast(`Claude added ${n} rule(s).`); } catch (err) {}
+  return n;
+}
+
+function claudeCategorize_(recentDays) {
+  const key = props().getProperty('ANTHROPIC_API_KEY');
+  if (!key) return 0;
+  const ss = SpreadsheetApp.getActive(), sh = ss.getSheetByName(TX_SHEET), rulesSh = ss.getSheetByName(RULES_SHEET);
+  if (!sh || !rulesSh || sh.getLastRow() < 2) return 0;
+  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, TX_HEADERS.length).getValues();
+  const since = recentDays ? addDays_(new Date(), -recentDays) : null;
+  const skipped = new Set(JSON.parse(props().getProperty('CLAUDE_SKIPPED') || '[]'));
+
+  // One item per merchant, with an example description and amount.
+  const items = [], byName = new Map();
+  for (const r of rows) {
+    const merchant = String(r[COL.merchant - 1] || '').trim(), amount = Number(r[COL.amount - 1]);
+    if (r[COL.category - 1] !== UNCATEGORIZED || !merchant || !(amount < 0)) continue;
+    if (since && !(new Date(r[COL.date - 1] || NaN) >= since)) continue;
+    const name = norm_(merchant);
+    if (!name || skipped.has(name) || byName.has(name)) continue;
+    const item = { id: items.length + 1, merchant, description: String(r[COL.desc - 1] || ''), amount_eur: -amount, name };
+    byName.set(name, item);
+    items.push(item);
+    if (items.length >= CLAUDE_MAX_MERCHANTS) break;
+  }
+  if (!items.length) return 0;
+
+  // Categories in use, each with a few merchants that are already in it, so Claude sees what they mean.
+  const rules = rulesSh.getRange(2, 1, rulesSh.getLastRow() - 1, 2).getValues().filter(r => r[0] && r[1]);
+  const examples = {};
+  rules.concat(rows.map(r => [r[COL.merchant - 1], r[COL.category - 1]])).forEach(([m, c]) => {
+    c = String(c).trim();
+    if (!c || CLAUDE_NOT_OFFERED.includes(c)) return;
+    const list = examples[c] = examples[c] || [];
+    if (list.length < 8 && !list.includes(String(m).toLowerCase())) list.push(String(m).toLowerCase());
+  });
+  const categories = Object.keys(examples);
+  const answers = askClaude_(key, categories, examples, items);
+
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const newRules = [];
+  for (const a of answers) {
+    const item = items.find(i => i.id === a.id);
+    if (!item) continue;
+    if (!categories.includes(a.category)) { skipped.add(item.name); continue; }
+    // Claude proposes a shorter, distinctive match ("telekomszaml" rather than the invoice number);
+    // it must occur in the merchant text at a word boundary, otherwise the full merchant is used.
+    const text = ' ' + norm_(item.merchant + ' ' + item.description) + ' ';
+    const match = norm_(a.match);
+    const rule = match.length >= 4 && text.includes(' ' + match) ? match : item.name;
+    if (newRules.some(r => r[0] === rule)) continue;
+    newRules.push([rule, a.category, 'claude ' + today]);
+  }
+  if (newRules.length) {
+    if (!rulesSh.getRange(1, 3).getValue()) rulesSh.getRange(1, 3).setValues([['Added by']]);
+    rulesSh.getRange(rulesSh.getLastRow() + 1, 1, newRules.length, 3).setValues(newRules);
+    applyRules_();
+  }
+  props().setProperty('CLAUDE_SKIPPED', JSON.stringify([...skipped].slice(-300)));
+  console.log(`Claude: ${items.length} merchant(s) asked, ${newRules.length} rule(s) added`);
+  return newRules.length;
+}
+
+function askClaude_(key, categories, examples, items) {
+  const prompt = [
+    'You categorize card payments for a personal expense tracker (a person living in Paris, often in Hungary,',
+    'paying with Revolut and an American Express card). For each merchant below, pick the category it most',
+    'likely belongs to, judging by what the merchant sells. Merchant strings are raw bank descriptors:',
+    'payment-processor prefixes (Sumup *, Sq *, Helopay*, Simplep*, Smplpay*, Hpy*), store numbers and',
+    'city names are noise. Use what you know about brands: "DF64 COFFEE GRINDER" sells coffee equipment, so',
+    'it is a purchase of goods, not eating out.',
+    '',
+    'Answer "Uncategorized" when you cannot tell with reasonable confidence, and always for payments to a',
+    'private person (a first and last name with no business), since those could be anything.',
+    '',
+    'Also give "match": a short lowercase word or phrase from the merchant string that identifies this',
+    'merchant in future payments (e.g. "telekomszaml" for "Telekomszaml*023133445", "aux delices du chat"',
+    'for "Aux Delices Du Chate"). Never a generic word like "coffee", "cafe", "shop", "paris", "pos" or a',
+    'number on its own.',
+    '',
+    'Categories, each with merchants already in it:',
+    ...categories.map(c => `- ${c}: ${examples[c].join(', ')}`),
+    '',
+    'Merchants to categorize (JSON):',
+    JSON.stringify(items.map(({ id, merchant, description, amount_eur }) => ({ id, merchant, description, amount_eur }))),
+  ].join('\n');
+  const schema = {
+    type: 'object', additionalProperties: false, required: ['results'],
+    properties: { results: { type: 'array', items: {
+      type: 'object', additionalProperties: false, required: ['id', 'category', 'match'],
+      properties: { id: { type: 'integer' }, category: { type: 'string', enum: categories.concat([UNCATEGORIZED]) }, match: { type: 'string' } },
+    } } },
+  };
+  const res = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+    method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+    headers: { 'x-api-key': key, 'anthropic-version': '2026-10-21', 'anthropic-beta': 'server-side-fallback-2026-07-01' },
+    payload: JSON.stringify({
+      model: CLAUDE_MODEL, max_tokens: 16000, fallbacks: 'default',
+      output_config: { effort: 'low', format: { type: 'json_schema', schema } },
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  const body = res.getContentText();
+  if (res.getResponseCode() !== 200) throw new Error(`Claude API ${res.getResponseCode()}: ${body.slice(0, 300)}`);
+  const msg = JSON.parse(body);
+  if (msg.stop_reason !== 'end_turn') throw new Error('Claude stopped: ' + msg.stop_reason);
+  const text = (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+  return JSON.parse(text).results || [];
+}
+
+// A hand correction of a row categorized by a Claude rule: update that rule, and the other rows it
+// categorized the same way, so the next payment at that merchant gets the corrected category.
+function fixClaudeRule_(sh, row, oldCat, newCat) {
+  const rulesSh = SpreadsheetApp.getActive().getSheetByName(RULES_SHEET);
+  if (!rulesSh || rulesSh.getLastRow() < 2) return;
+  const r = sh.getRange(row, 1, 1, TX_HEADERS.length).getValues()[0];
+  const text = ' ' + norm_(r[COL.merchant - 1] + ' ' + r[COL.desc - 1]) + ' ';
+  const rules = rulesSh.getRange(2, 1, rulesSh.getLastRow() - 1, 3).getValues();
+  // The rule that categorized this row is the first one that matches it.
+  const i = rules.findIndex(x => x[0] && x[1] && text.includes(' ' + norm_(x[0])));
+  if (i < 0 || String(rules[i][1]).trim() !== oldCat || !/^claude/.test(String(rules[i][2]))) return;
+  rulesSh.getRange(i + 2, 2, 1, 2).setValues([[newCat, rules[i][2] + ', fixed by hand']]);
+  const match = ' ' + norm_(rules[i][0]);
+  const all = sh.getRange(2, 1, sh.getLastRow() - 1, TX_HEADERS.length).getValues();
+  const cats = all.map(x => {
+    const t = ' ' + norm_(x[COL.merchant - 1] + ' ' + x[COL.desc - 1]) + ' ';
+    return [x[COL.category - 1] === oldCat && t.includes(match) ? newCat : x[COL.category - 1]];
+  });
+  sh.getRange(2, COL.category, cats.length, 1).setValues(cats);
 }
 
 /* ---------------- Consent flow (web app) ---------------- */
