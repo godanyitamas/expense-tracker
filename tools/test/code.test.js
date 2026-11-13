@@ -275,4 +275,20 @@ t.ctx.dailyRun();
 assert.strictEqual(t.claudeCalls.length, 1); assert.strictEqual(cat(t, 'k1'), 'Uncategorized');
 assert.ok(t.rows.some((r) => r[0] === 'rev-1:rev-1-t1'));
 console.log('16 ok backlog run categorizes old rows; Claude API error: sync still completes');
+
+// 17. Amex bill: the Revolut debit to American Express and the payment received on the Amex
+//     account are Transfers (purchases already count on Amex); a merchant refund on Amex keeps
+//     its category; the annual fee (an Amex debit) is not caught.
+t = setup({ sessions: { SESSION: rev } });
+t.sheets.Rules.grid.push(['amazon', 'Shopping'], ['american', 'Travel']); // a generic rule must not win
+const AMX = 'Amex EUR TAMAS GODANYI', REV = 'EUR Tamás Godányi …8462';
+t.sheets.Transactions.grid.push(
+  ['b1', recent, -715.73, 'EUR', 'AMERICAN EXPRESS CARTE-FRANCE', 'Prlv SEPA American Express', 'Uncategorized', REV],
+  ['b2', recent, 715.73, 'EUR', 'PAIEMENT RECU MERCI', 'PAIEMENT RECU MERCI', 'Uncategorized', AMX],
+  ['b3', recent, 30, 'EUR', 'AMAZON FR MARKETPLACE APE', 'Refund', 'Uncategorized', AMX],
+  ['b4', recent, -150, 'EUR', 'AMERICAN EXPRESS', 'Cotisation annuelle', 'Uncategorized', AMX],
+  ['b5', recent, 50, 'EUR', 'Someone', 'Gift', 'Uncategorized', REV]);
+t.ctx.recategorizeAll();
+assert.deepStrictEqual(['b1', 'b2', 'b3', 'b4', 'b5'].map((k) => cat(t, k)), ['Transfers', 'Transfers', 'Shopping', 'Travel', 'Income']);
+console.log('17 ok Amex bill: Revolut debit + Amex payment received = Transfers; refund keeps category; Revolut credit still Income');
 console.log('ALL SERVER TESTS PASSED');

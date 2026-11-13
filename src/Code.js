@@ -458,7 +458,7 @@ function toRow_(acc, t, now, rules) {
     amt.currency || '',
     merchant,
     desc,
-    categorize_(merchant, desc, amount, rules),
+    categorize_(merchant, desc, amount, rules, acc.label),
     acc.label,
     now,
   ];
@@ -475,10 +475,19 @@ function loadRules_() {
     .filter(r => r[0]);
 }
 
-function categorize_(merchant, desc, amount, rules) {
+// The Amex bill is paid from Revolut. Its purchases already count on the Amex rows (by purchase
+// date), so both sides of the payment are Transfers, or the spending would be counted twice:
+// - a Revolut (non-Amex) debit to American Express, whatever the rules say;
+// - a credit on the Amex account that no rule matches (the "payment received"; refunds from a
+//   merchant keep that merchant's category through its rule). A card credit is never income.
+const isAmex_ = account => /^Amex /.test(String(account || ''));
+
+function categorize_(merchant, desc, amount, rules, account) {
   const text = ' ' + norm_(merchant + ' ' + desc) + ' ';
+  if (amount < 0 && !isAmex_(account) && /\s(american express|amex)\s/.test(text)) return 'Transfers';
   const hit = rules.find(([match]) => text.includes(' ' + match)); // match must start at a word boundary
   if (hit) return hit[1];
+  if (amount > 0 && isAmex_(account)) return 'Transfers';
   return amount > 0 ? 'Income' : UNCATEGORIZED;
 }
 
@@ -504,7 +513,7 @@ function applyRules_(force) {
   const cats = rows.map(r => {
     const current = r[COL.category - 1];
     if (!force && current && current !== UNCATEGORIZED) return [current];
-    const next = categorize_(r[COL.merchant - 1], r[COL.desc - 1], r[COL.amount - 1], rules);
+    const next = categorize_(r[COL.merchant - 1], r[COL.desc - 1], r[COL.amount - 1], rules, r[COL.account - 1]);
     if (next !== current) changed = true;
     return [next];
   });
